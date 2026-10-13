@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# telemetry build outputs
+telemetry/server
+telemetry/client
+telemetry/test_protocol
+telemetry/test_stats
