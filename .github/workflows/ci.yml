@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'ci-verify-*']
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Byte-compile Python
+        run: python -m py_compile $(git ls-files '*.py')
+      - name: flake8
+        run: |
+          pip install --quiet flake8
+          flake8 --max-line-length=110 $(git ls-files '*.py')
+
+  build:
+    name: Build and unit tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for telemetry sources
+        id: src
+        run: |
+          if [ -f telemetry/Makefile ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::skipped: no telemetry/ yet"
+          fi
+      - name: Build (-Wall -Wextra -Werror)
+        if: steps.src.outputs.present == 'true'
+        run: make -C telemetry all
+      - name: Unit tests
+        if: steps.src.outputs.present == 'true'
+        run: make -C telemetry test
+
+  integration:
+    name: Mininet integration
+    runs-on: ubuntu-24.04
+    needs: build
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check for telemetry sources
+        id: src
+        run: |
+          if [ -f telemetry/Makefile ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::skipped: no telemetry/ yet"
+          fi
+      - name: Install Mininet and Open vSwitch
+        if: steps.src.outputs.present == 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mininet openvswitch-switch iproute2 ethtool
+          sudo modprobe openvswitch
+          sudo modprobe sch_netem
+          sudo systemctl start openvswitch-switch
+          sudo ovs-vsctl show
+      - name: Build
+        if: steps.src.outputs.present == 'true'
+        run: make -C telemetry all
+      - name: Run path tests
+        if: steps.src.outputs.present == 'true'
+        timeout-minutes: 5
+        run: sudo python3 tests/integration/test_paths.py --logdir integration-logs
+      - name: Dump state on failure
+        if: failure() && steps.src.outputs.present == 'true'
+        run: |
+          sudo ovs-vsctl show || true
+          for f in integration-logs/*; do echo "== $f"; cat "$f"; done || true
+          sudo tail -n 100 /var/log/openvswitch/ovs-vswitchd.log || true
+      - name: Upload logs
+        if: always() && steps.src.outputs.present == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-logs
+          path: integration-logs/
+          if-no-files-found: ignore
+      - name: Clean up Mininet
+        if: always() && steps.src.outputs.present == 'true'
+        run: sudo mn -c
