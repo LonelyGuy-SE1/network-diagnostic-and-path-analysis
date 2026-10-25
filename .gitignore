@@ -222,3 +222,6 @@ telemetry/server
 telemetry/client
 telemetry/test_protocol
 telemetry/test_stats
+telemetry/test_report
+integration-logs/
+demo-logs/
