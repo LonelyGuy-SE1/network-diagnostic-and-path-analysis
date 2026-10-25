@@ -11,15 +11,18 @@ Usage:
   sudo python3 topology/diamond.py --static             # no controller, static per-port path flows
   sudo python3 topology/diamond.py --static --datapath user   # same, without the OVS kernel module
   sudo python3 topology/diamond.py --switch lxbr        # Linux bridges with STP, no OVS needed
+  sudo python3 topology/diamond.py --mgmt               # plus an out-of-band h1 <-> root link
+                                                        # so the client can report to Ryu
 
 Hosts get static ARP entries so probes never depend on ARP flooding.
 """
 import argparse
 
 from mininet.cli import CLI
+from mininet.link import Link
 from mininet.log import setLogLevel
 from mininet.net import Mininet
-from mininet.node import OVSSwitch, RemoteController
+from mininet.node import Node, OVSSwitch, RemoteController
 from mininet.nodelib import LinuxBridge
 from mininet.topo import Topo
 
@@ -31,6 +34,11 @@ H1_PORT, H2_PORT = 1, 3
 
 # Probe port -> middle switch. Placeholder until issue #3 settles the ports.
 PATH_PORTS = {5001: 's2', 5002: 's3'}
+
+# Out-of-band management link for telemetry reports (README, "Control traffic
+# stays off the tested links"). h1-eth1 <-> root-eth0, never touches a switch.
+MGMT_HOST_IP = '192.168.100.1'
+MGMT_ROOT_IP = '192.168.100.254'
 
 
 class DiamondTopo(Topo):
@@ -86,6 +94,22 @@ def prepare_hosts(net, datapath='kernel'):
             h.cmd('ethtool -K', h.defaultIntf(), 'tx off')
 
 
+def add_mgmt_link(net, host='h1'):
+    """Veth from a host straight into the root namespace, where Ryu runs.
+    Returns (root_node, link); pass them to remove_mgmt_link() before net.stop()."""
+    root = Node('root', inNamespace=False)
+    link = Link(net.get(host), root)
+    link.intf1.setIP(MGMT_HOST_IP, 24)
+    link.intf2.setIP(MGMT_ROOT_IP, 24)
+    return root, link
+
+
+def remove_mgmt_link(mgmt):
+    root, link = mgmt
+    link.delete()
+    root.terminate()
+
+
 def install_static_flows(net):
     """Controller-less baseline: each probe port takes its own middle switch,
     everything else (ICMP, other ports) goes via s2."""
@@ -123,6 +147,8 @@ def main():
                     help='no controller, install static per-port path flows (OVS only)')
     ap.add_argument('--controller-ip', default='127.0.0.1')
     ap.add_argument('--controller-port', type=int, default=6653)
+    ap.add_argument('--mgmt', action='store_true',
+                    help='add h1-eth1 %s <-> root %s for controller reports' % (MGMT_HOST_IP, MGMT_ROOT_IP))
     args = ap.parse_args()
 
     setLogLevel('info')
@@ -132,7 +158,10 @@ def main():
     prepare_hosts(net, args.datapath)
     if args.static and args.switch == 'ovs':
         install_static_flows(net)
+    mgmt = add_mgmt_link(net) if args.mgmt else None
     CLI(net)
+    if mgmt:
+        remove_mgmt_link(mgmt)
     net.stop()
 
 

@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
@@ -15,6 +16,7 @@
 
 #include "../protocol.h"
 #include "common.h"
+#include "report.h"
 #include "stats.h"
 
 static volatile sig_atomic_t g_stop = 0;
@@ -32,7 +34,9 @@ struct Path {
 static void usage(const char* prog) {
     std::fprintf(stderr,
         "usage: %s [-s server_ip] [-p ports] [-i interval_ms] [-t timeout_ms] [-w window] [-d seconds]\n"
-        "  defaults: 127.0.0.1, 5001,5002, 100 ms, 1000 ms, 100 probes, run until SIGINT\n",
+        "          [-c controller_ip:port]\n"
+        "  defaults: 127.0.0.1, 5001,5002, 100 ms, 1000 ms, 100 probes, run until SIGINT, no reporting\n"
+        "  -c sends each second's per-path stats to the controller as one JSON line over TCP\n",
         prog);
 }
 
@@ -40,8 +44,9 @@ int main(int argc, char** argv) {
     const char* server = "127.0.0.1";
     std::vector<uint16_t> ports = {5001, 5002};  // placeholder until issue #3 is settled
     long interval_ms = 100, timeout_ms = 1000, window = 100, duration_s = 0;
+    std::unique_ptr<ndpa::Reporter> reporter;
     int opt;
-    while ((opt = getopt(argc, argv, "s:p:i:t:w:d:h")) != -1) {
+    while ((opt = getopt(argc, argv, "s:p:i:t:w:d:c:h")) != -1) {
         switch (opt) {
         case 's': server = optarg; break;
         case 'p': ports = ndpa::parse_ports(optarg); break;
@@ -49,6 +54,12 @@ int main(int argc, char** argv) {
         case 't': timeout_ms = std::atol(optarg); break;
         case 'w': window = std::atol(optarg); break;
         case 'd': duration_s = std::atol(optarg); break;
+        case 'c': {
+            sockaddr_in ctl;
+            if (!ndpa::parse_endpoint(optarg, ctl)) { std::fprintf(stderr, "bad -c, want ip:port: %s\n", optarg); return 2; }
+            reporter.reset(new ndpa::Reporter(ctl));
+            break;
+        }
         default: usage(argv[0]); return opt == 'h' ? 0 : 2;
         }
     }
@@ -107,15 +118,23 @@ int main(int argc, char** argv) {
         }
 
         if (now >= next_report) {
+            std::vector<ndpa::PathReport> reports;
             for (auto& p : paths) {
                 p.stats.expire(now);
                 auto s = p.stats.snapshot();
+                reports.push_back({p.id, p.port, s});
                 std::printf("path=%u port=%u sent=%llu recv=%llu loss=%.1f%% rtt_ms min=%.3f avg=%.3f max=%.3f jitter=%.3f dup=%llu reord=%llu late=%llu\n",
                             p.id, p.port, (unsigned long long)s.sent, (unsigned long long)s.received, s.loss_pct,
                             s.rtt_min_ms, s.rtt_avg_ms, s.rtt_max_ms, s.jitter_ms,
                             (unsigned long long)s.duplicates, (unsigned long long)s.reordered, (unsigned long long)s.late);
             }
             std::fflush(stdout);
+            if (reporter) {
+                timespec wall;
+                clock_gettime(CLOCK_REALTIME, &wall);
+                uint64_t ts_ms = static_cast<uint64_t>(wall.tv_sec) * 1000 + wall.tv_nsec / 1'000'000;
+                reporter->send_line(ndpa::format_report(ts_ms, server, reports), now);
+            }
             next_report += 1'000'000'000ull;
         }
 
