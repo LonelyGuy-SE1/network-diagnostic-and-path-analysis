@@ -57,8 +57,7 @@ def sw(dpid):
     return 's%d' % dpid
 
 
-def now_str(ts=None):
-    ts = time.time() if ts is None else ts
+def now_str(ts):
     return time.strftime('%H:%M:%S', time.localtime(ts)) + '.%03d' % int((ts % 1) * 1000)
 
 

@@ -10,7 +10,7 @@ void PathStats::on_send(uint32_t seq, uint64_t send_ns) {
     ++sent_;
 }
 
-void PathStats::on_echo(uint32_t seq, uint64_t send_ns, uint64_t now_ns) {
+void PathStats::on_echo(uint32_t seq, uint64_t now_ns) {
     auto it = outstanding_.find(seq);
     if (it == outstanding_.end()) {
         // Either already answered, already timed out, or never sent.
@@ -20,6 +20,7 @@ void PathStats::on_echo(uint32_t seq, uint64_t send_ns, uint64_t now_ns) {
             ++dups_;
         return;
     }
+    double rtt = (now_ns - it->second) / 1e6;
     outstanding_.erase(it);
     ++received_;
 
@@ -27,7 +28,6 @@ void PathStats::on_echo(uint32_t seq, uint64_t send_ns, uint64_t now_ns) {
     if (!any_rx_ || seq > highest_rx_) highest_rx_ = seq;
     any_rx_ = true;
 
-    double rtt = (now_ns - send_ns) / 1e6;
     // RFC 3550 6.4.1: J += (|D| - J) / 16, with D the change in transit time.
     // For a round trip the transit difference is just the RTT difference.
     if (last_rtt_ms_ >= 0) jitter_ms_ += (std::fabs(rtt - last_rtt_ms_) - jitter_ms_) / 16.0;

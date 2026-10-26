@@ -3,7 +3,7 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main, 'ci-verify-*']
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -33,20 +33,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Check for telemetry sources
-        id: src
-        run: |
-          if [ -f telemetry/Makefile ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::skipped: no telemetry/ yet"
-          fi
       - name: Build (-Wall -Wextra -Werror)
-        if: steps.src.outputs.present == 'true'
         run: make -C telemetry all
       - name: Unit tests
-        if: steps.src.outputs.present == 'true'
         run: make -C telemetry test
 
   integration:
@@ -56,17 +45,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Check for telemetry sources
-        id: src
-        run: |
-          if [ -f telemetry/Makefile ]; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::skipped: no telemetry/ yet"
-          fi
       - name: Install Mininet and Open vSwitch
-        if: steps.src.outputs.present == 'true'
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q mininet openvswitch-switch iproute2 ethtool
@@ -75,25 +54,23 @@ jobs:
           sudo systemctl start openvswitch-switch
           sudo ovs-vsctl show
       - name: Build
-        if: steps.src.outputs.present == 'true'
         run: make -C telemetry all
       - name: Run path tests
-        if: steps.src.outputs.present == 'true'
         timeout-minutes: 5
         run: sudo python3 tests/integration/test_paths.py --logdir integration-logs
       - name: Dump state on failure
-        if: failure() && steps.src.outputs.present == 'true'
+        if: failure()
         run: |
           sudo ovs-vsctl show || true
           for f in integration-logs/*; do echo "== $f"; cat "$f"; done || true
           sudo tail -n 100 /var/log/openvswitch/ovs-vswitchd.log || true
       - name: Upload logs
-        if: always() && steps.src.outputs.present == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: integration-logs
           path: integration-logs/
           if-no-files-found: ignore
       - name: Clean up Mininet
-        if: always() && steps.src.outputs.present == 'true'
+        if: always()
         run: sudo mn -c

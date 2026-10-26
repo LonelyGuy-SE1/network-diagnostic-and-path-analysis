@@ -27,8 +27,8 @@ public:
 
     // Record an outgoing probe. Seqs must be increasing.
     void on_send(uint32_t seq, uint64_t send_ns);
-    // Record an echo. send_ns comes from the packet, now_ns from the local clock.
-    void on_echo(uint32_t seq, uint64_t send_ns, uint64_t now_ns);
+    // Record an echo. RTT uses the stored send time, not the echoed one.
+    void on_echo(uint32_t seq, uint64_t now_ns);
     // Mark outstanding probes older than the timeout as lost.
     void expire(uint64_t now_ns);
 

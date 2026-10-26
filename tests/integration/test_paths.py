@@ -84,7 +84,7 @@ class Run:
 
 
 def run(args):
-    net = diamond.build_net('ovs', args.datapath, controller=False)
+    net = diamond.build_net(args.datapath, controller=False)
     net.start()
     try:
         diamond.prepare_hosts(net, args.datapath)

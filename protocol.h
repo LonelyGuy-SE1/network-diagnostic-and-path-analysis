@@ -32,11 +32,22 @@ struct ProbePacket {
 static_assert(sizeof(ProbePacket) == 24, "ProbePacket wire size changed");
 static_assert(offsetof(ProbePacket, send_ns) == 16, "ProbePacket layout changed");
 
+// Byte by byte, so it is correct on any host byte order.
 inline uint64_t hton64(uint64_t v) {
-    return (static_cast<uint64_t>(htonl(static_cast<uint32_t>(v))) << 32) |
-           htonl(static_cast<uint32_t>(v >> 32));
+    unsigned char b[8];
+    for (int i = 0; i < 8; ++i) b[i] = static_cast<unsigned char>(v >> (56 - 8 * i));
+    uint64_t out;
+    std::memcpy(&out, b, sizeof out);
+    return out;
 }
-inline uint64_t ntoh64(uint64_t v) { return hton64(v); }
+
+inline uint64_t ntoh64(uint64_t v) {
+    unsigned char b[8];
+    std::memcpy(b, &v, sizeof b);
+    uint64_t out = 0;
+    for (int i = 0; i < 8; ++i) out = (out << 8) | b[i];
+    return out;
+}
 
 inline void encode(const ProbePacket& host, unsigned char* buf) {
     ProbePacket net;

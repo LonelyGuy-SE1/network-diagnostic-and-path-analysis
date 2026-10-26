@@ -6,7 +6,6 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <memory>
 #include <netinet/in.h>
 #include <poll.h>
@@ -26,7 +25,6 @@ struct Path {
     uint16_t id;
     uint16_t port;
     int fd;
-    sockaddr_in dst;
     uint32_t next_seq = 0;
     ndpa::PathStats stats;
 };
@@ -88,7 +86,7 @@ int main(int argc, char** argv) {
         dst.sin_addr = server_addr;
         dst.sin_port = htons(ports[i]);
         if (connect(fd, reinterpret_cast<sockaddr*>(&dst), sizeof dst) < 0) { std::perror("connect"); return 1; }
-        paths.push_back({static_cast<uint16_t>(i), ports[i], fd, dst, 0,
+        paths.push_back({static_cast<uint16_t>(i), ports[i], fd, 0,
                          ndpa::PathStats(static_cast<uint32_t>(window), timeout_ms * 1'000'000ull)});
         fds.push_back({fd, POLLIN, 0});
     }
@@ -100,7 +98,6 @@ int main(int argc, char** argv) {
 
     while (!g_stop) {
         uint64_t now = ndpa::mono_ns();
-        if (duration_s > 0 && now - start >= static_cast<uint64_t>(duration_s) * 1'000'000'000ull) break;
 
         if (now >= next_probe) {
             for (auto& p : paths) {
@@ -137,6 +134,8 @@ int main(int argc, char** argv) {
             }
             next_report += 1'000'000'000ull;
         }
+        // After the report, so -d N prints N stats lines.
+        if (duration_s > 0 && now - start >= static_cast<uint64_t>(duration_s) * 1'000'000'000ull) break;
 
         uint64_t wake = next_probe < next_report ? next_probe : next_report;
         now = ndpa::mono_ns();
@@ -148,13 +147,15 @@ int main(int argc, char** argv) {
             break;
         }
         for (size_t i = 0; i < fds.size(); ++i) {
-            if (!(fds[i].revents & POLLIN)) continue;
+            // POLLERR too: recv() clears a pending ICMP error (no reflector
+            // listening), otherwise poll() keeps returning at once.
+            if (!fds[i].revents) continue;
             ssize_t len = recv(fds[i].fd, buf, sizeof buf, 0);
             uint64_t rx = ndpa::mono_ns();
             ndpa::ProbePacket pkt;
             if (len < 0 || !ndpa::decode(buf, static_cast<size_t>(len), pkt)) continue;
             if (pkt.path_id != paths[i].id) continue;
-            paths[i].stats.on_echo(pkt.seq, pkt.send_ns, rx);
+            paths[i].stats.on_echo(pkt.seq, rx);
         }
     }
 

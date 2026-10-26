@@ -15,7 +15,7 @@ Scenarios:
   4. B link down        s3-s4 down. Port status marks B failed, reroute to A.
   5. B restored         link up, B healthy again.
 
-    sudo RYU_MANAGER=/opt/ryu-venv/bin/ryu-manager python3 tests/integration/test_controller.py
+    sudo RYU_MANAGER=$PWD/.venv/bin/ryu-manager python3 tests/integration/test_controller.py
 
 Exits non-zero if a check fails. Logs, flow dumps and JSON snapshots go to --logdir.
 """
@@ -23,7 +23,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -100,8 +99,12 @@ class Demo:
         self.seen_events = len(evs)
 
     def client_text(self):
-        with open(self.log_path('client.log')) as f:
-            return f.read()
+        # The client starts in the background, so its log may not exist yet.
+        try:
+            with open(self.log_path('client.log')) as f:
+                return f.read()
+        except FileNotFoundError:
+            return ''
 
     def mark(self):
         """Start of a phase: worst live loss is measured from here."""
@@ -173,7 +176,7 @@ def run(args):
         if not wait_for(lambda: rest('topology') is not None, 20):
             print('ryu did not come up, see %s/ryu.log' % args.logdir)
             return ['ryu start']
-        net = diamond.build_net('ovs', args.datapath, controller=True)
+        net = diamond.build_net(args.datapath, controller=True)
         net.start()
         diamond.prepare_hosts(net, args.datapath)
         mgmt = diamond.add_mgmt_link(net)
@@ -310,8 +313,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--datapath', choices=['kernel', 'user'], default='kernel')
     ap.add_argument('--logdir', default='integration-logs/controller')
-    ap.add_argument('--ryu', default=os.environ.get('RYU_MANAGER') or shutil.which('ryu-manager')
-                    or '/opt/ryu-venv/bin/ryu-manager')
+    ap.add_argument('--ryu', default=os.environ.get('RYU_MANAGER')
+                    or os.path.join(ROOT, '.venv', 'bin', 'ryu-manager'))
     args = ap.parse_args()
     args.logdir = os.path.abspath(args.logdir)
     os.makedirs(args.logdir, exist_ok=True)

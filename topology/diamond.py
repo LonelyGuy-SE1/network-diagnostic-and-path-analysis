@@ -10,7 +10,6 @@ Usage:
   sudo python3 topology/diamond.py --controller-ip 10.0.0.100 --controller-port 6633
   sudo python3 topology/diamond.py --static             # no controller, static per-port path flows
   sudo python3 topology/diamond.py --static --datapath user   # same, without the OVS kernel module
-  sudo python3 topology/diamond.py --switch lxbr        # Linux bridges with STP, no OVS needed
   sudo python3 topology/diamond.py --mgmt               # plus an out-of-band h1 <-> root link
                                                         # so the client can report to Ryu
 
@@ -23,7 +22,6 @@ from mininet.link import Link
 from mininet.log import setLogLevel
 from mininet.net import Mininet
 from mininet.node import Node, OVSSwitch, RemoteController
-from mininet.nodelib import LinuxBridge
 from mininet.topo import Topo
 
 # Port numbers follow the link order in DiamondTopo.build():
@@ -54,24 +52,7 @@ class DiamondTopo(Topo):
         self.addLink(s4, h2)
 
 
-def disable_bridge_netfilter():
-    """Stop br_netfilter from pushing bridged frames through the host's
-    iptables FORWARD chain (Docker sets it to DROP, which eats every probe)."""
-    for table in ('iptables', 'ip6tables', 'arptables'):
-        try:
-            with open('/proc/sys/net/bridge/bridge-nf-call-' + table, 'w') as f:
-                f.write('0')
-        except OSError:
-            pass
-
-
-def build_net(switch='ovs', datapath='kernel', controller=True,
-              controller_ip='127.0.0.1', controller_port=6653):
-    if switch == 'lxbr':
-        disable_bridge_netfilter()
-        return Mininet(topo=DiamondTopo(), controller=None,
-                       switch=lambda name, **kw: LinuxBridge(name, stp=True, **kw))
-
+def build_net(datapath='kernel', controller=True, controller_ip='127.0.0.1', controller_port=6653):
     def ovs(name, **kw):
         return OVSSwitch(name, protocols='OpenFlow13', datapath=datapath,
                          failMode='secure', **kw)
@@ -140,11 +121,10 @@ def install_static_flows(net):
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument('--switch', choices=['ovs', 'lxbr'], default='ovs')
     ap.add_argument('--datapath', choices=['kernel', 'user'], default='kernel',
                     help="'user' runs OVS without its kernel module")
     ap.add_argument('--static', action='store_true',
-                    help='no controller, install static per-port path flows (OVS only)')
+                    help='no controller, install static per-port path flows')
     ap.add_argument('--controller-ip', default='127.0.0.1')
     ap.add_argument('--controller-port', type=int, default=6653)
     ap.add_argument('--mgmt', action='store_true',
@@ -152,11 +132,10 @@ def main():
     args = ap.parse_args()
 
     setLogLevel('info')
-    net = build_net(args.switch, args.datapath, not args.static,
-                    args.controller_ip, args.controller_port)
+    net = build_net(args.datapath, not args.static, args.controller_ip, args.controller_port)
     net.start()
     prepare_hosts(net, args.datapath)
-    if args.static and args.switch == 'ovs':
+    if args.static:
         install_static_flows(net)
     mgmt = add_mgmt_link(net) if args.mgmt else None
     CLI(net)
