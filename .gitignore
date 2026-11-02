@@ -225,3 +225,6 @@ telemetry/test_stats
 telemetry/test_report
 integration-logs/
 demo-logs/
+
+# benchmark raw logs (runs.csv and summaries can be committed)
+eval/results/*/raw/
