@@ -5,14 +5,15 @@ Does not touch demo/d1_demo.sh. Brings up Mininet diamond + mgmt, starts the
 real C++ server/client, injects the README faults, and leaves the net up so
 the dashboard can show real path states.
 
-  # terminal A (no sudo):
+Preferred entry point (starts Ryu + root agent + this demo):
+
+  ./demo/gui.sh
+
+Or manually:
+
   .venv/bin/ryu-manager --observe-links controller/ndpa_controller.py
-
-  # terminal B:
   sudo ./demo/gui_demo.sh
-
-  # browser:
-  http://127.0.0.1:8080/ndpa/
+  # browser: http://127.0.0.1:8080/ndpa/
 """
 import argparse
 import json

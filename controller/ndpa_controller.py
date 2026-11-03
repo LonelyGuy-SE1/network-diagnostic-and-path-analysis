@@ -21,50 +21,54 @@ What it does:
       GET /ndpa/topology   switches, links, hosts
       GET /ndpa/paths      path table, states, last reports, active path
       GET /ndpa/events     recent decisions with timestamps
-      POST /ndpa/run       save topology/topo.json and kick demo/gui_run.sh
-      POST /ndpa/demo      start demo/gui_demo.sh (Mininet + real probes + faults)
+      POST /ndpa/run       save topology/topo.json; enqueue Mininet via ./demo/gui.sh agent
+      POST /ndpa/demo      enqueue gui_demo via the same agent (no passwordless sudo)
       GET  /ndpa/demo/status  phase file written by gui_demo.py
 """
 import collections
 import json
 import mimetypes
 import os
-import subprocess
 import sys
 import time
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND = os.path.join(_ROOT, 'frontend')
 TOPO_JSON = os.path.join(_ROOT, 'topology', 'topo.json')
-GUI_RUN = os.path.join(_ROOT, 'demo', 'gui_run.sh')
-GUI_DEMO = os.path.join(_ROOT, 'demo', 'gui_demo.sh')
 GUI_DEMO_STATUS = os.environ.get('NDPA_GUI_DEMO_STATUS', '/tmp/ndpa_gui_demo_status.json')
-DEMO_LOG_DIR = os.path.join(_ROOT, 'demo-logs', 'gui')
+# Root agent started by ./demo/gui.sh — dashboard Demo/Run enqueue here (no passwordless sudo).
+AGENT_DIR = os.environ.get('NDPA_GUI_AGENT', '/tmp/ndpa_gui_agent')
+AGENT_HEART = os.path.join(AGENT_DIR, 'heartbeat')
+AGENT_REQ = os.path.join(AGENT_DIR, 'request.json')
+AGENT_HINT = 'stack not armed · run once: ./demo/gui.sh'
 
 
-def _sudo_ok():
+def _agent_ok():
     try:
-        return subprocess.run(['sudo', '-n', 'true'], capture_output=True, timeout=2).returncode == 0
-    except (OSError, subprocess.TimeoutExpired):
+        with open(AGENT_HEART) as f:
+            age = time.time() - float(f.read().strip())
+        return age < 5.0
+    except (OSError, ValueError):
         return False
 
 
-def _spawn_root(script, logfile):
-    """Run script as root via sudo -n. Returns (ok, message)."""
-    if not os.path.isfile(script):
-        return False, 'missing %s' % script
-    if not _sudo_ok():
-        return False, 'need passwordless sudo · run: sudo %s' % os.path.relpath(script, _ROOT)
-    os.makedirs(os.path.dirname(logfile), exist_ok=True)
+def _enqueue_gui(op, hold=45):
+    """Ask the root gui agent to run demo|run. Returns (ok, message)."""
+    if op not in ('demo', 'run'):
+        return False, 'bad op'
+    if not _agent_ok():
+        return False, AGENT_HINT
+    os.makedirs(AGENT_DIR, exist_ok=True)
+    payload = {'op': op, 'hold': hold, 't': time.time()}
+    tmp = AGENT_REQ + '.tmp'
     try:
-        log = open(logfile, 'a')
-        log.write('\n--- spawn %s at %s ---\n' % (script, time.strftime('%H:%M:%S')))
-        log.flush()
-        subprocess.Popen(['sudo', '-n', 'bash', script], cwd=_ROOT,
-                         stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        with open(tmp, 'w') as f:
+            json.dump(payload, f)
+            f.write('\n')
+        os.rename(tmp, AGENT_REQ)
     except OSError as e:
         return False, str(e)
-    return True, 'started'
+    return True, 'queued %s' % op
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -503,7 +507,7 @@ class NdpaRest(ControllerBase):
 
     @route('ndpa', '/ndpa/run', methods=['POST'])
     def run_topo(self, req, **kwargs):
-        """GUI Run: write topology/topo.json, then start demo/gui_run.sh (Mininet CLI)."""
+        """GUI Run: save topology/topo.json, enqueue Mininet via gui agent."""
         try:
             data = json.loads(req.body.decode() if req.body else '{}')
             with open(TOPO_JSON, 'w') as f:
@@ -512,11 +516,11 @@ class NdpaRest(ControllerBase):
         except (ValueError, OSError, UnicodeDecodeError) as e:
             return Response(status=400, content_type='application/json',
                             body=json.dumps({'error': str(e)}).encode())
-        ok, detail = _spawn_root(GUI_RUN, os.path.join(DEMO_LOG_DIR, 'gui_run.log'))
+        ok, detail = _enqueue_gui('run')
         if ok:
-            self.app.note('PATHS', 'gui Run started Mininet via demo/gui_run.sh')
+            self.app.note('PATHS', 'gui Run queued via ./demo/gui.sh agent')
             return self._json({'ok': True, 'started': True,
-                               'message': 'Mininet starting · topo saved · use CLI on that terminal'})
+                               'message': 'Mininet starting · topo saved'})
         return Response(status=503, content_type='application/json',
                         body=json.dumps({
                             'ok': False, 'started': False,
@@ -526,16 +530,15 @@ class NdpaRest(ControllerBase):
 
     @route('ndpa', '/ndpa/demo', methods=['POST'])
     def demo_start(self, req, **kwargs):
-        """Start demo/gui_demo.sh: Mininet + C++ probes + real faults (not d1_demo)."""
-        ok, detail = _spawn_root(GUI_DEMO, os.path.join(DEMO_LOG_DIR, 'gui_demo.log'))
+        """Enqueue gui_demo via ./demo/gui.sh agent (real probes + faults)."""
+        ok, detail = _enqueue_gui('demo')
         if not ok:
             return Response(status=503, content_type='application/json',
                             body=json.dumps({
                                 'ok': False, 'error': detail,
                                 'message': detail,
-                                'hint': 'CLI fallback (untouched): sudo ./demo/d1_demo.sh',
                             }).encode())
-        self.app.note('PATHS', 'GUI demo started (demo/gui_demo.sh) — watch CLASSIFY/REROUTE')
+        self.app.note('PATHS', 'GUI demo queued via agent — watch CLASSIFY/REROUTE')
         return self._json({
             'ok': True, 'demo': True,
             'message': 'GUI demo started · real probes + faults · watch paths/events',

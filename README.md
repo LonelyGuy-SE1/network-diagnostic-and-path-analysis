@@ -105,7 +105,7 @@ telemetry/          C++ client, reflector, stats, Makefile
 controller/         Ryu app + path classifier
 frontend/           live dashboard (HTML/CSS/JS)
 topology/           Mininet diamond (+ optional topo.json from GUI)
-demo/               d1_demo.sh (CLI) · gui_demo.sh (GUI) · helpers
+demo/               gui.sh (one-shot GUI) · d1_demo.sh (CLI) · helpers
 tests/              unit + integration
 eval/               D2 benchmark hooks
 docs/screenshots/   dashboard captures (filled after a live run)
@@ -144,10 +144,11 @@ python3 tests/test_eval_metrics.py
 
 | Demo | Command | Behaviour |
 |------|---------|-----------|
-| **CLI (D1)** | `sudo ./demo/d1_demo.sh` | Self-contained. **Kills any existing `ndpa_controller`**, starts its own Ryu, runs fault scenarios, asserts reroute, exits. Logs → `demo-logs/`. |
-| **GUI** | T1: `.venv/bin/ryu-manager --observe-links controller/ndpa_controller.py`<br>T2: `sudo ./demo/gui_demo.sh`<br>Browser: http://127.0.0.1:8080/ndpa/ | Uses your live Ryu. Does **not** kill the controller. Real probes + faults; watch paths/events. |
+| **GUI (recommended)** | `./demo/gui.sh` | One command: starts Ryu in the background, asks for **sudo once**, runs the live fault demo, leaves an agent so dashboard **Demo/Run** work without passwordless sudo. Open http://127.0.0.1:8080/ndpa/ |
+| **GUI (agent only)** | `./demo/gui.sh --serve` | Ryu + root agent only; trigger faults from the dashboard buttons. |
+| **CLI (D1)** | `sudo ./demo/d1_demo.sh` | Self-contained. **Kills any existing `ndpa_controller`**, starts its own Ryu, asserts reroute, exits. Logs → `demo-logs/`. Do not use this for the live dashboard. |
 
-> **Never** run `mn -c` while the dashboard Ryu is up — Mininet cleanup runs `killall ryu-manager`. `gui_demo.sh` / `gui_run.sh` avoid that.
+> **Never** run `mn -c` while the dashboard Ryu is up — Mininet cleanup runs `killall ryu-manager`. `gui.sh` / `gui_demo.sh` / `gui_run.sh` avoid that.
 
 Pass `--datapath user` to the CLI demo if the OVS kernel module is unavailable. Set `RYU_MANAGER` to override the venv binary.
 
@@ -211,7 +212,7 @@ Upload to your course portal or link a private Drive/YouTube URL here when ready
 Video: <add link after recording>
 ```
 
-Tip: `sudo ./demo/gui_demo.sh --hold 60` leaves Mininet up for recording after the fault timeline.
+Tip: `./demo/gui.sh --hold 60` leaves a longer watch window after the fault timeline.
 
 ---
 

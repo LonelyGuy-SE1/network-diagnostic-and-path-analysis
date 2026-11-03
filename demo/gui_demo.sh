@@ -5,10 +5,8 @@
 #   sudo pkill -f ndpa_controller.py
 # and will kill the Ryu you started for /ndpa/.
 #
-# Correct GUI flow (two terminals):
-#   T1:  .venv/bin/ryu-manager --observe-links controller/ndpa_controller.py
-#   T2:  sudo ./demo/gui_demo.sh
-#   Browser: http://127.0.0.1:8080/ndpa/
+# Preferred: ./demo/gui.sh  (Ryu + agent + this demo, one sudo)
+# Manual:    start ryu-manager, then sudo ./demo/gui_demo.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

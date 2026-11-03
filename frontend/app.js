@@ -469,7 +469,7 @@
       if (!r.ok || body.ok === false) {
         $('status').className = 'err';
         $('status').textContent = body.message || body.error
-          || ('Run failed · topo saved · try: sudo ./demo/gui_run.sh');
+          || ('Run failed · topo saved · start: ./demo/gui.sh --serve');
       } else {
         $('status').className = '';
         $('status').textContent = body.message || 'Mininet starting';
@@ -485,8 +485,7 @@
   };
 
   $('demo').onclick = async () => {
-    // GUI demo = demo/gui_demo.sh (Mininet + C++ probes + faults).
-    // CLI demo = sudo ./demo/d1_demo.sh (untouched).
+    // Queues work to the root agent from ./demo/gui.sh (no passwordless sudo).
     $('status').textContent = 'starting GUI demo…';
     try {
       const r = await fetch('/ndpa/demo', {
@@ -497,8 +496,8 @@
       const body = await r.json().catch(() => ({}));
       if (!r.ok || body.ok === false) {
         $('status').className = 'err';
-        $('status').textContent = (body.message || body.error || 'demo failed')
-          + ' · CLI: sudo ./demo/d1_demo.sh';
+        $('status').textContent = body.message || body.error
+          || 'demo failed · start: ./demo/gui.sh';
         return;
       }
       liveOn = true;
@@ -507,7 +506,7 @@
       tick();
     } catch (err) {
       $('status').className = 'err';
-      $('status').textContent = 'controller offline · CLI: sudo ./demo/d1_demo.sh';
+      $('status').textContent = 'controller offline · start: ./demo/gui.sh';
     }
   };
 
