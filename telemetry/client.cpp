@@ -40,7 +40,7 @@ static void usage(const char* prog) {
 
 int main(int argc, char** argv) {
     const char* server = "127.0.0.1";
-    std::vector<uint16_t> ports = {5001, 5002};  // placeholder until issue #3 is settled
+    std::vector<uint16_t> ports = {5001, 5002};
     long interval_ms = 100, timeout_ms = 1000, window = 100, duration_s = 0;
     std::unique_ptr<ndpa::Reporter> reporter;
     int opt;

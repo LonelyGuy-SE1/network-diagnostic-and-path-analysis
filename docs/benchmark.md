@@ -1,4 +1,4 @@
-# Benchmark: static baseline vs dynamic controller (issue #17)
+# Benchmark: static baseline vs dynamic controller
 
 `eval/benchmark.py` runs the same faults twice on the Mininet diamond and writes one CSV row per run.
 

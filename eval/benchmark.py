@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Benchmark harness: static baseline vs the dynamic controller (issue #17).
+"""Benchmark harness: static baseline vs the dynamic controller.
 
 For every scenario the same timeline runs in two modes on the Mininet diamond:
 

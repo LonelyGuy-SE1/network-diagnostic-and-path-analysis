@@ -23,7 +23,7 @@ static void usage(const char* prog) {
 }
 
 int main(int argc, char** argv) {
-    std::vector<uint16_t> ports = {5001, 5002};  // placeholder until issue #3 is settled
+    std::vector<uint16_t> ports = {5001, 5002};
     int opt;
     while ((opt = getopt(argc, argv, "p:h")) != -1) {
         if (opt == 'p') {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paced UDP stream used as "live traffic" by the benchmark (issue #17).
+"""Paced UDP stream used as "live traffic" by the benchmark.
 
 The sender numbers every packet and stamps it with the wall-clock send time.
 The receiver logs (seq, send time, receive time, bytes) for every packet, so

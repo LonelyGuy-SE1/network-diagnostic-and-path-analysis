@@ -1,4 +1,4 @@
-// Per-path stats reporter to the controller (issue #8, minimal version).
+// Per-path stats reporter to the controller.
 // One JSON object per line over TCP. The socket is non-blocking and the
 // reporter reconnects on its own, so a missing controller never stalls probing.
 #pragma once

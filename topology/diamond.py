@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Diamond topology for path analysis (issue #15).
+"""Diamond topology for path analysis.
 
     h1 - s1 --- s2 --- s4 - h2
            \\          /

@@ -1,4 +1,4 @@
-"""Path analysis for the NDPA controller (issues #9, #13, #14).
+"""Path analysis for the NDPA controller.
 
 No Ryu imports here, so the logic can be unit tested with plain python3.
 The Ryu app in ndpa_controller.py feeds it reports and port events.
@@ -7,8 +7,8 @@ The Ryu app in ndpa_controller.py feeds it reports and port events.
 HEALTHY, DEGRADED, FAILED, UNKNOWN = 'healthy', 'degraded', 'failed', 'unknown'
 RANK = {HEALTHY: 0, DEGRADED: 1, FAILED: 2, UNKNOWN: 3}
 
-# Thresholds (issue #3 still has to confirm them). Baseline RTT on the
-# Mininet diamond is well under 1 ms, so 50 ms means something is wrong.
+# Baseline RTT on the Mininet diamond is well under 1 ms, so 50 ms
+# means something is wrong.
 DEGRADED_LOSS_PCT = 5.0
 FAILED_LOSS_PCT = 50.0
 DEGRADED_RTT_MS = 50.0
@@ -55,7 +55,7 @@ def classify_sample(loss_pct, rtt_avg_ms):
 
 
 def route_name(route):
-    """Stable path id from switch dpiids — never a hardcoded letter."""
+    """Stable path id from switch dpids."""
     return '-'.join('s%d' % d for d in route)
 
 

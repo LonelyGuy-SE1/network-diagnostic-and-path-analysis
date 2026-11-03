@@ -4,8 +4,6 @@
 Listens for Start (op=run) from the Ryu dashboard so the web UI never
 needs passwordless sudo.
 """
-from __future__ import print_function
-
 import argparse
 import json
 import os
@@ -119,10 +117,10 @@ def _reap_child():
     _child = None
 
 
-def run_op(op, hold=20, extra_args=None):
+def run_op(op):
     global _child, _last_op
     _stop_child()
-    if op not in ('run', 'demo'):
+    if op != 'run':
         return False, 'unknown op %r' % op
     if not os.path.isfile(GUI_DEMO_PY):
         return False, 'missing %s' % GUI_DEMO_PY
@@ -130,7 +128,7 @@ def run_op(op, hold=20, extra_args=None):
     logpath = os.path.join(LOG_DIR, 'run.log')
     log('starting Mininet + probes → %s' % logpath)
     _cleanup_ifaces()
-    args = [sys.executable, GUI_DEMO_PY, '--idle'] + list(extra_args or [])
+    args = [sys.executable, GUI_DEMO_PY, '--idle']
     with open(logpath, 'a') as lf:
         lf.write('\n--- agent %s at %s ---\n' % (op, time.strftime('%H:%M:%S')))
         lf.flush()
@@ -210,8 +208,7 @@ def consume_request():
     if op == 'fault':
         ok, detail = apply_fault(req)
     else:
-        hold = int(req.get('hold', 20))
-        ok, detail = run_op(op, hold=hold)
+        ok, detail = run_op(op)
     _write_reply({
         'ok': ok, 'op': op, 'detail': detail, 'id': req.get('id'),
     })
@@ -220,10 +217,6 @@ def consume_request():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument('--auto-demo', action='store_true',
-                    help=argparse.SUPPRESS)
-    ap.add_argument('--hold', type=int, default=45,
-                    help=argparse.SUPPRESS)
     ap.add_argument('--serve-forever', action='store_true', default=True,
                     help='keep listening for dashboard Start (default)')
     ap.add_argument('--once', action='store_true',
@@ -251,11 +244,6 @@ def main():
     atomic_write(PID, '%d\n' % os.getpid())
     beat()
     log('listening in %s (dashboard Start needs no passwordless sudo)' % AGENT_DIR)
-
-    if args.auto_demo:
-        ok, detail = run_op('run')
-        _write_reply({'ok': ok, 'op': 'run', 'detail': detail})
-        log('auto-start: %s' % detail)
 
     while not _stop:
         beat()

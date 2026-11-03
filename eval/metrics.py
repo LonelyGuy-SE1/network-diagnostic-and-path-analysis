@@ -1,4 +1,4 @@
-"""Metrics and result handling for the benchmark (issue #17).
+"""Metrics and result handling for the benchmark.
 
 Plain Python, no Mininet or Ryu, so it is unit tested with tests/test_eval_metrics.py.
 """

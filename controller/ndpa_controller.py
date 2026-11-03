@@ -1,5 +1,5 @@
 """NDPA Ryu app: topology discovery, per-path flows, telemetry ingest,
-path classification and rerouting (issues #9 to #14, minimal version).
+path classification and rerouting.
 
     ryu-manager --observe-links controller/ndpa_controller.py
 
@@ -11,7 +11,7 @@ What it does:
     PROBE_PORTS[i]: requests match udp_dst, echoes match udp_src. These
     probe flows never move, so each path keeps being measured.
   * All other IPv4 and ARP traffic between the two hosts ("live traffic")
-    follows the active path. It starts on the first discovered route (usually s1-s2-s4).
+    follows the active path. It starts on the first discovered route.
   * The C++ client reports per-path stats as JSON lines over TCP (REPORT_PORT).
   * analysis.py classifies each path healthy / degraded / failed from those
     reports and from OpenFlow port status, and decides when to move live
@@ -22,7 +22,6 @@ What it does:
       GET /ndpa/paths      path table, states, last reports, active path
       GET /ndpa/events     recent decisions with timestamps
       POST /ndpa/run       save topology/topo.json; enqueue Mininet via ./demo/gui.sh agent
-      GET  /ndpa/demo/status  phase file written by gui_demo.py
 """
 import collections
 import json
@@ -34,8 +33,7 @@ import time
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND = os.path.join(_ROOT, 'frontend')
 TOPO_JSON = os.path.join(_ROOT, 'topology', 'topo.json')
-GUI_DEMO_STATUS = os.environ.get('NDPA_GUI_DEMO_STATUS', '/tmp/ndpa_gui_demo_status.json')
-# Root agent started by ./demo/gui.sh — dashboard Start enqueues here (no passwordless sudo).
+# Root agent started by ./demo/gui.sh — dashboard Start enqueues here.
 AGENT_DIR = os.environ.get('NDPA_GUI_AGENT', '/tmp/ndpa_gui_agent')
 AGENT_HEART = os.path.join(AGENT_DIR, 'heartbeat')
 AGENT_REQ = os.path.join(AGENT_DIR, 'request.json')
@@ -419,7 +417,7 @@ class NdpaController(app_manager.RyuApp):
                           port, COOKIE_LIVE)
                 self._out(dpid, PRIO_LIVE, parser.OFPMatch(eth_type=ETH_ARP, arp_tpa=d), port, COOKIE_LIVE)
 
-    # ---- telemetry ingest (JSON lines over TCP, issue #11) -------------------
+    # ---- telemetry ingest (JSON lines over TCP) -----------------------------
 
     def _serve_reports(self):
         server = hub.StreamServer(('0.0.0.0', REPORT_PORT), self._report_conn)
@@ -477,7 +475,7 @@ class NdpaController(app_manager.RyuApp):
         self.logger.info('%s REPORT   %s', now_str(now), ' | '.join(parts))
         self._evaluate(now)
 
-    # ---- failures: port status and port stats (issue #12) --------------------
+    # ---- failures: port status and port stats --------------------------------
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def _port_status(self, ev):
@@ -514,7 +512,7 @@ class NdpaController(app_manager.RyuApp):
                 'rx_dropped': st.rx_dropped, 'tx_dropped': st.tx_dropped,
                 'rx_errors': st.rx_errors, 'tx_errors': st.tx_errors}
 
-    # ---- decisions (issues #13, #14) ----------------------------------------
+    # ---- decisions ----------------------------------------------------------
 
     def _evaluate(self, now):
         if self.active is None:
@@ -599,7 +597,7 @@ class NdpaController(app_manager.RyuApp):
         reply = _agent_reply() or {}
         reply_age = now - float(reply['ts']) if reply.get('ts') else 1e9
         last_fail = None
-        if (reply.get('op') in ('run', 'demo') and reply.get('ok') is False
+        if (reply.get('op') == 'run' and reply.get('ok') is False
                 and reply_age < 60):
             last_fail = reply.get('detail') or reply.get('error')
             starting = False
@@ -790,11 +788,3 @@ class NdpaRest(ControllerBase):
         self.app.note('FAULT', '%s on %s (loss=%s)' % (action, intf, loss))
         return self._json({'ok': True, 'action': action, 'intf': intf,
                            'loss_pct': loss, 'message': detail})
-
-    @route('ndpa', '/ndpa/demo/status', methods=['GET'])
-    def demo_status(self, req, **kwargs):
-        try:
-            with open(GUI_DEMO_STATUS) as f:
-                return self._json(json.load(f))
-        except (OSError, ValueError):
-            return self._json({'phase': 'idle'})

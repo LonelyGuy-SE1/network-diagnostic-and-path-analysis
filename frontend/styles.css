@@ -246,24 +246,7 @@ button:disabled {
 .legend .active::before { background: var(--healthy); height: 0.7rem; }
 .legend .idle::before { background: #999; }
 
-.mode-toggle {
-  display: inline-flex;
-  border: 3px solid var(--line);
-  box-shadow: 3px 3px 0 var(--shadow);
-}
-
-.mode-toggle button {
-  border: 0;
-  border-right: 3px solid var(--line);
-  border-radius: 0;
-  box-shadow: none;
-  background: #fff;
-  padding: 0.45rem 0.8rem;
-}
-.mode-toggle button:last-child { border-right: 0; }
-.mode-toggle button.on { background: var(--draft); }
-
-button, .btn {
+button {
   appearance: none;
   border: 3px solid var(--line);
   background: #fff;
@@ -307,24 +290,6 @@ input, select {
   min-width: 7.5rem;
   font: 700 13px var(--font);
   box-shadow: 2px 2px 0 var(--shadow);
-}
-
-.hint {
-  margin: 0.4rem 0 0;
-  padding: 0.7rem 0.8rem;
-  background: #fff;
-  border: 3px solid var(--line);
-  box-shadow: 3px 3px 0 var(--shadow);
-  color: var(--muted);
-  font-size: 0.86rem;
-}
-
-.hint code {
-  font-family: var(--mono);
-  color: var(--ink);
-  background: var(--draft);
-  padding: 0.05rem 0.25rem;
-  border: 2px solid var(--line);
 }
 
 .list {

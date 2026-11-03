@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
-"""GUI live demo — uses an ALREADY-RUNNING Ryu (the one serving /ndpa/).
+"""Bring up Mininet + C++ probes for the dashboard Start button.
 
-Does not touch demo/d1_demo.sh. Brings up Mininet diamond + mgmt, starts the
-real C++ server/client, injects the README faults, and leaves the net up so
-the dashboard can show real path states.
-
-Preferred entry point (starts Ryu + root agent + this demo):
+Uses an already-running Ryu. Does not touch demo/d1_demo.sh.
 
   ./demo/gui.sh
   # browser: http://127.0.0.1:8080/ndpa/
@@ -25,13 +21,9 @@ from mininet.log import setLogLevel  # noqa: E402
 import diamond  # noqa: E402
 
 BIN = os.path.join(ROOT, 'telemetry')
-SERVER_IP = '10.0.0.2'
 PORT_A, PORT_B, PORT_LIVE = 5001, 5002, 5003
-PATH_S2, PATH_S3 = 's1-s2-s4', 's1-s3-s4'  # via middle hop
 REPORT_PORT, REST_PORT = 9100, 8080
 REST = 'http://127.0.0.1:%d/ndpa/' % REST_PORT
-NETEM_INTF = 's2-eth2'
-STATUS_PATH = os.environ.get('NDPA_GUI_DEMO_STATUS', '/tmp/ndpa_gui_demo_status.json')
 
 
 def pick_hosts(net):
@@ -73,25 +65,18 @@ def wait_for(cond, timeout, step=0.25):
 
 
 def status(phase, **extra):
-    data = {'phase': phase, 't': time.strftime('%H:%M:%S'), **extra}
-    try:
-        with open(STATUS_PATH, 'w') as f:
-            json.dump(data, f)
-            f.write('\n')
-    except OSError:
-        pass
-    # Use .format — phase strings may contain literal '%' (e.g. "loss 100%").
-    print('[{0}] {1}'.format(data['t'], phase), flush=True)
+    msg = phase
+    if extra.get('error'):
+        msg = '%s: %s' % (phase, extra['error'])
+    print('[%s] %s' % (time.strftime('%H:%M:%S'), msg), flush=True)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--datapath', choices=['kernel', 'user'], default='kernel')
-    ap.add_argument('--idle', action='store_true',
-                    help='bring up Mininet + probes and hold; no auto faults')
-    ap.add_argument('--hold', type=int, default=20,
-                    help='seconds to keep the net up after the last fault (GUI watch window)')
+    ap.add_argument('--idle', action='store_true', default=True,
+                    help=argparse.SUPPRESS)
     ap.add_argument('--logdir', default=os.path.join(ROOT, 'demo-logs', 'gui'))
     args = ap.parse_args()
     os.makedirs(args.logdir, exist_ok=True)
@@ -107,12 +92,6 @@ def main():
         return 1
 
     setLogLevel('warning')
-    # Canned fault timeline uses the classic diamond. Idle/Start uses topo.json if present.
-    saved = None
-    if not args.idle and os.path.isfile(diamond.TOPO_JSON):
-        saved = diamond.TOPO_JSON + '.gui_demo_bak'
-        os.rename(diamond.TOPO_JSON, saved)
-
     net = None
     mgmt = None
     try:
@@ -167,52 +146,13 @@ def main():
         status('baseline', active=view.get('active'),
                paths={p['name']: p['state'] for p in view.get('paths') or []},
                healthy=bool(ok))
-        if args.idle:
-            status('idle (probes running, no auto faults)')
-            stop = []
-            signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
-            signal.signal(signal.SIGINT, lambda *_: stop.append(1))
-            while not stop:
-                time.sleep(0.5)
-            status('idle stop')
-            return 0
-
-        time.sleep(4)
-
-        status('soft/blackhole {0} (netem loss 100% on {1})'.format(PATH_S2, NETEM_INTF))
-        net.get('s2').cmd('tc qdisc replace dev %s root netem loss 100%%' % NETEM_INTF)
-        moved = wait_for(lambda: rest('paths')['active'] == PATH_S3, 20)
-        view = rest('paths')
-        status(PATH_S2 + ' blackholed', active=view.get('active'), rerouted=bool(moved),
-               paths={p['name']: p['state'] for p in view.get('paths') or []})
-        time.sleep(5)
-
-        status('repair ' + PATH_S2 + ' (clear netem)')
-        net.get('s2').cmd('tc qdisc del dev %s root' % NETEM_INTF)
-        wait_for(lambda: rest('paths')['paths'][0]['state'] == 'healthy', 20)
-        view = rest('paths')
-        status(PATH_S2 + ' repaired', active=view.get('active'),
-               paths={p['name']: p['state'] for p in view.get('paths') or []})
-        time.sleep(3)
-
-        status('hard fail ' + PATH_S3 + ' (link s3-s4 down)')
-        net.configLinkStatus('s3', 's4', 'down')
-        moved = wait_for(lambda: rest('paths')['active'] == PATH_S2, 15)
-        view = rest('paths')
-        status(PATH_S3 + ' link down', active=view.get('active'), rerouted=bool(moved),
-               paths={p['name']: p['state'] for p in view.get('paths') or []})
-        time.sleep(5)
-
-        status('restore ' + PATH_S3 + ' (link s3-s4 up)')
-        net.configLinkStatus('s3', 's4', 'up')
-        wait_for(lambda: rest('paths')['paths'][1]['state'] == 'healthy', 20)
-        view = rest('paths')
-        status(PATH_S3 + ' restored', active=view.get('active'),
-               paths={p['name']: p['state'] for p in view.get('paths') or []})
-
-        status('hold for GUI', hold_s=args.hold)
-        time.sleep(max(0, args.hold))
-        status('done')
+        status('idle (probes running)')
+        stop = []
+        signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+        signal.signal(signal.SIGINT, lambda *_: stop.append(1))
+        while not stop:
+            time.sleep(0.5)
+        status('idle stop')
         return 0
     finally:
         try:
@@ -233,8 +173,6 @@ def main():
                 net.stop()
             except Exception:
                 pass
-        if saved and os.path.isfile(saved):
-            os.rename(saved, diamond.TOPO_JSON)
 
 
 if __name__ == '__main__':

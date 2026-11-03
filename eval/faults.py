@@ -1,4 +1,4 @@
-"""Fault injection on the Mininet diamond (issue #17, reusable for #16).
+"""Fault injection on the Mininet diamond.
 
 All faults hit path A (s1-s2-s4), the path live traffic starts on:
 

@@ -15,7 +15,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --serve) shift ;;
     --once) SERVE_FOREVER=0; shift ;;
-    --hold) shift 2 ;;  # leftover flag; Start no longer runs a canned timeline
     --datapath) shift 2 ;;
     -h|--help)
       sed -n '2,12p' "$0"
