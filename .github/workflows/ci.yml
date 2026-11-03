@@ -5,6 +5,14 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      run_d1:
+        description: 'Also run the full D1 controller demo'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -35,15 +43,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build (-Wall -Wextra -Werror)
         run: make -C telemetry all
-      - name: Unit tests
+      - name: C++ unit tests
         run: make -C telemetry test
+      - name: Analysis unit tests
+        run: python3 tests/test_analysis.py
       - name: Eval metrics unit tests
         run: python3 tests/test_eval_metrics.py
 
   integration:
     name: Mininet integration
     runs-on: ubuntu-24.04
-    needs: build
+    needs: [lint, build]
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -57,7 +67,7 @@ jobs:
           sudo ovs-vsctl show
       - name: Build
         run: make -C telemetry all
-      - name: Run path tests
+      - name: Path pinning integration
         timeout-minutes: 5
         run: sudo python3 tests/integration/test_paths.py --logdir integration-logs
       - name: Dump state on failure
@@ -76,3 +86,66 @@ jobs:
       - name: Clean up Mininet
         if: always()
         run: sudo mn -c
+
+  # Controller end-to-end (D1) — heavier; main pushes + optional manual dispatch
+  d1-demo:
+    name: D1 controller demo
+    runs-on: ubuntu-24.04
+    needs: [lint, build]
+    if: >
+      (github.event_name == 'push' && github.ref == 'refs/heads/main') ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_d1)
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+      - name: Install Mininet / OVS / Ryu
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q mininet openvswitch-switch iproute2 ethtool
+          sudo modprobe openvswitch
+          sudo modprobe sch_netem
+          sudo systemctl start openvswitch-switch
+          pip install --quiet "setuptools<66" wheel pbr eventlet==0.30.2
+          pip install --quiet --no-build-isolation ryu==4.34
+      - name: Build telemetry
+        run: make -C telemetry all
+      - name: Run D1 demo
+        timeout-minutes: 15
+        run: |
+          export RYU_MANAGER="$(python -c 'import shutil; print(shutil.which("ryu-manager"))')"
+          sudo -E ./demo/d1_demo.sh --datapath user
+      - name: Upload demo-logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-demo-logs
+          path: demo-logs/
+          if-no-files-found: ignore
+      - name: Clean up Mininet
+        if: always()
+        run: sudo mn -c
+
+  # Aggregate gate so branch protection can require a single check name
+  ci-success:
+    name: CI success
+    runs-on: ubuntu-24.04
+    if: always()
+    needs: [lint, build, integration, d1-demo]
+    steps:
+      - name: Require lint, build, integration
+        run: |
+          echo "lint=${{ needs.lint.result }}"
+          echo "build=${{ needs.build.result }}"
+          echo "integration=${{ needs.integration.result }}"
+          echo "d1-demo=${{ needs.d1-demo.result }}"
+          test "${{ needs.lint.result }}" = success
+          test "${{ needs.build.result }}" = success
+          test "${{ needs.integration.result }}" = success
+          # d1-demo is skipped on PRs — treat skipped/success as OK
+          case "${{ needs.d1-demo.result }}" in
+            success|skipped) ;;
+            *) echo "d1-demo failed"; exit 1 ;;
+          esac
