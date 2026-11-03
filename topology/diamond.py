@@ -13,9 +13,14 @@ Usage:
   sudo python3 topology/diamond.py --mgmt               # plus an out-of-band h1 <-> root link
                                                         # so the client can report to Ryu
 
+If topology/topo.json exists (saved from the GUI draft), that graph is used
+instead of the hardcoded diamond.
+
 Hosts get static ARP entries so probes never depend on ARP flooding.
 """
 import argparse
+import json
+import os
 
 from mininet.cli import CLI
 from mininet.link import Link
@@ -24,13 +29,16 @@ from mininet.net import Mininet
 from mininet.node import Node, OVSSwitch, RemoteController
 from mininet.topo import Topo
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+TOPO_JSON = os.path.join(HERE, 'topo.json')
+
 # Port numbers follow the link order in DiamondTopo.build():
 #   s1: 1=h1 2=s2 3=s3    s2, s3: 1=s1 2=s4    s4: 1=s2 2=s3 3=h2
 S1_UPLINK = {'s2': 2, 's3': 3}
 S4_DOWNLINK = {'s2': 1, 's3': 2}
 H1_PORT, H2_PORT = 1, 3
 
-# Probe port -> middle switch. Placeholder until issue #3 settles the ports.
+# Probe port -> middle switch.
 PATH_PORTS = {5001: 's2', 5002: 's3'}
 
 # Out-of-band management link for telemetry reports (README, "Control traffic
@@ -52,12 +60,37 @@ class DiamondTopo(Topo):
         self.addLink(s4, h2)
 
 
+class JsonTopo(Topo):
+    """GUI draft from topology/topo.json: switches, hosts, links."""
+
+    def build(self, spec):
+        nodes = {}
+        for name in spec.get('switches', []):
+            nodes[name] = self.addSwitch(name)
+        for i, h in enumerate(spec.get('hosts', []), start=1):
+            name = h.get('name') or ('h%d' % i)
+            ip = h.get('ip') or ('10.0.0.%d' % i)
+            if '/' not in ip:
+                ip += '/24'
+            mac = h.get('mac') or ('00:00:00:00:00:%02x' % i)
+            nodes[name] = self.addHost(name, ip=ip, mac=mac)
+        for a, b in spec.get('links', []):
+            self.addLink(nodes[a], nodes[b])
+
+
+def load_topo():
+    if os.path.isfile(TOPO_JSON):
+        with open(TOPO_JSON) as f:
+            return JsonTopo(spec=json.load(f))
+    return DiamondTopo()
+
+
 def build_net(datapath='kernel', controller=True, controller_ip='127.0.0.1', controller_port=6653):
     def ovs(name, **kw):
         return OVSSwitch(name, protocols='OpenFlow13', datapath=datapath,
                          failMode='secure', **kw)
 
-    net = Mininet(topo=DiamondTopo(), switch=ovs, controller=None)
+    net = Mininet(topo=load_topo(), switch=ovs, controller=None)
     if controller:
         net.addController('c0', controller=RemoteController,
                           ip=controller_ip, port=controller_port)
@@ -65,13 +98,16 @@ def build_net(datapath='kernel', controller=True, controller_ip='127.0.0.1', con
 
 
 def prepare_hosts(net, datapath='kernel'):
-    h1, h2 = net.get('h1', 'h2')
-    h1.setARP(h2.IP(), h2.MAC())
-    h2.setARP(h1.IP(), h1.MAC())
+    hosts = list(net.hosts)
+    for a in hosts:
+        for b in hosts:
+            if a is b:
+                continue
+            a.setARP(b.IP(), b.MAC())
     if datapath == 'user':
         # The netdev datapath does not finish checksums that veth TX offload
         # leaves partial, so the receiver drops the UDP. Compute them on the host.
-        for h in net.hosts:
+        for h in hosts:
             h.cmd('ethtool -K', h.defaultIntf(), 'tx off')
 
 

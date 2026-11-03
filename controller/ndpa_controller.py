@@ -17,15 +17,54 @@ What it does:
     reports and from OpenFlow port status, and decides when to move live
     traffic. Moving rewrites the live flows on the switches.
   * REST view on the Ryu wsgi port (default 8080):
+      GET /ndpa/           live dashboard (frontend/)
       GET /ndpa/topology   switches, links, hosts
       GET /ndpa/paths      path table, states, last reports, active path
       GET /ndpa/events     recent decisions with timestamps
+      POST /ndpa/run       save topology/topo.json and kick demo/gui_run.sh
+      POST /ndpa/demo      start demo/gui_demo.sh (Mininet + real probes + faults)
+      GET  /ndpa/demo/status  phase file written by gui_demo.py
 """
 import collections
 import json
+import mimetypes
 import os
+import subprocess
 import sys
 import time
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+FRONTEND = os.path.join(_ROOT, 'frontend')
+TOPO_JSON = os.path.join(_ROOT, 'topology', 'topo.json')
+GUI_RUN = os.path.join(_ROOT, 'demo', 'gui_run.sh')
+GUI_DEMO = os.path.join(_ROOT, 'demo', 'gui_demo.sh')
+GUI_DEMO_STATUS = os.environ.get('NDPA_GUI_DEMO_STATUS', '/tmp/ndpa_gui_demo_status.json')
+DEMO_LOG_DIR = os.path.join(_ROOT, 'demo-logs', 'gui')
+
+
+def _sudo_ok():
+    try:
+        return subprocess.run(['sudo', '-n', 'true'], capture_output=True, timeout=2).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def _spawn_root(script, logfile):
+    """Run script as root via sudo -n. Returns (ok, message)."""
+    if not os.path.isfile(script):
+        return False, 'missing %s' % script
+    if not _sudo_ok():
+        return False, 'need passwordless sudo · run: sudo %s' % os.path.relpath(script, _ROOT)
+    os.makedirs(os.path.dirname(logfile), exist_ok=True)
+    try:
+        log = open(logfile, 'a')
+        log.write('\n--- spawn %s at %s ---\n' % (script, time.strftime('%H:%M:%S')))
+        log.flush()
+        subprocess.Popen(['sudo', '-n', 'bash', script], cwd=_ROOT,
+                         stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    except OSError as e:
+        return False, str(e)
+    return True, 'started'
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -419,6 +458,37 @@ class NdpaRest(ControllerBase):
     def _json(obj):
         return Response(content_type='application/json', body=(json.dumps(obj, indent=1) + '\n').encode())
 
+    @staticmethod
+    def _file(path):
+        try:
+            with open(path, 'rb') as f:
+                body = f.read()
+        except OSError as e:
+            return Response(status=404, content_type='text/plain',
+                            body=('missing: %s\n' % e).encode())
+        ctype = mimetypes.guess_type(path)[0] or 'application/octet-stream'
+        return Response(content_type=ctype, body=body)
+
+    def _dashboard(self):
+        return self._file(os.path.join(FRONTEND, 'index.html'))
+
+    # Ryu's Routes mapper treats /ndpa and /ndpa/ as different; bind both.
+    @route('ndpa', '/ndpa', methods=['GET'])
+    def dashboard(self, req, **kwargs):
+        return self._dashboard()
+
+    @route('ndpa', '/ndpa/', methods=['GET'])
+    def dashboard_slash(self, req, **kwargs):
+        return self._dashboard()
+
+    @route('ndpa', '/ndpa/styles.css', methods=['GET'])
+    def styles(self, req, **kwargs):
+        return self._file(os.path.join(FRONTEND, 'styles.css'))
+
+    @route('ndpa', '/ndpa/app.js', methods=['GET'])
+    def app_js(self, req, **kwargs):
+        return self._file(os.path.join(FRONTEND, 'app.js'))
+
     @route('ndpa', '/ndpa/topology', methods=['GET'])
     def topology(self, req, **kwargs):
         return self._json(self.app.topology_view())
@@ -430,3 +500,51 @@ class NdpaRest(ControllerBase):
     @route('ndpa', '/ndpa/events', methods=['GET'])
     def events(self, req, **kwargs):
         return self._json(list(self.app.decisions))
+
+    @route('ndpa', '/ndpa/run', methods=['POST'])
+    def run_topo(self, req, **kwargs):
+        """GUI Run: write topology/topo.json, then start demo/gui_run.sh (Mininet CLI)."""
+        try:
+            data = json.loads(req.body.decode() if req.body else '{}')
+            with open(TOPO_JSON, 'w') as f:
+                json.dump(data, f, indent=2)
+                f.write('\n')
+        except (ValueError, OSError, UnicodeDecodeError) as e:
+            return Response(status=400, content_type='application/json',
+                            body=json.dumps({'error': str(e)}).encode())
+        ok, detail = _spawn_root(GUI_RUN, os.path.join(DEMO_LOG_DIR, 'gui_run.log'))
+        if ok:
+            self.app.note('PATHS', 'gui Run started Mininet via demo/gui_run.sh')
+            return self._json({'ok': True, 'started': True,
+                               'message': 'Mininet starting · topo saved · use CLI on that terminal'})
+        return Response(status=503, content_type='application/json',
+                        body=json.dumps({
+                            'ok': False, 'started': False,
+                            'saved': True, 'error': detail,
+                            'message': 'topo saved · ' + detail,
+                        }).encode())
+
+    @route('ndpa', '/ndpa/demo', methods=['POST'])
+    def demo_start(self, req, **kwargs):
+        """Start demo/gui_demo.sh: Mininet + C++ probes + real faults (not d1_demo)."""
+        ok, detail = _spawn_root(GUI_DEMO, os.path.join(DEMO_LOG_DIR, 'gui_demo.log'))
+        if not ok:
+            return Response(status=503, content_type='application/json',
+                            body=json.dumps({
+                                'ok': False, 'error': detail,
+                                'message': detail,
+                                'hint': 'CLI fallback (untouched): sudo ./demo/d1_demo.sh',
+                            }).encode())
+        self.app.note('PATHS', 'GUI demo started (demo/gui_demo.sh) — watch CLASSIFY/REROUTE')
+        return self._json({
+            'ok': True, 'demo': True,
+            'message': 'GUI demo started · real probes + faults · watch paths/events',
+        })
+
+    @route('ndpa', '/ndpa/demo/status', methods=['GET'])
+    def demo_status(self, req, **kwargs):
+        try:
+            with open(GUI_DEMO_STATUS) as f:
+                return self._json(json.load(f))
+        except (OSError, ValueError):
+            return self._json({'phase': 'idle'})
