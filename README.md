@@ -9,7 +9,7 @@
 
 A socket-based network diagnostic application that measures **delay (RTT)**, **packet loss**, and **path characteristics** on every candidate path between hosts, correlates those measurements with a live **SDN topology**, identifies **failed / degraded** paths, and compares alternatives so live traffic can be steered onto the best path.
 
-> Absolute RTT accuracy inside Mininet is limited by scheduler jitter; results are interpreted relative to a healthy baseline, not as hardware-grade numbers.
+> Absolute RTT accuracy inside Mininet is limited by scheduler jitter. Results are interpreted relative to a healthy baseline, not as hardware-grade numbers.
 
 ---
 
@@ -30,17 +30,16 @@ A socket-based network diagnostic application that measures **delay (RTT)**, **p
 
 ## Features
 
-1. **Topology discovery** — switches, links, and host attachment points.
-2. **Per-path UDP probing** — each candidate path pinned by destination port (A=`5001`, B=`5002`).
-3. **Telemetry** — RTT (min/avg/max), jitter, loss, reported over an out-of-band TCP channel.
-4. **Classification** — healthy / degraded / failed with hold-time to avoid flapping.
-5. **Reroute** — live traffic moved to the best healthy alternative; decisions logged with timestamps.
-6. **Live dashboard** — `frontend/` at http://127.0.0.1:8080/ndpa/ (served by Ryu).
-7. **Two demos** — CLI end-to-end check and GUI live demo (see below).
+1. **Topology discovery**: switches, links, and host attachment points.
+2. **Per-path UDP probing**: each candidate path pinned by destination port (`5001`, `5002`, …).
+3. **Telemetry**: RTT (min/avg/max), jitter, and loss over an out-of-band TCP channel.
+4. **Classification**: healthy / degraded / failed with hold-time to avoid flapping.
+5. **Reroute**: live traffic moved to the best healthy alternative; decisions logged with timestamps.
+6. **Live dashboard**: `frontend/` at http://127.0.0.1:8080/ndpa/ (served by Ryu).
 
 ---
 
-## Architecture / design
+## Architecture
 
 ```mermaid
 graph TD
@@ -71,29 +70,29 @@ graph TD
 
 ### Default diamond paths
 
-| Path | Route | Probe port |
-|------|-------|------------|
-| A | s1 → s2 → s4 | udp/5001 |
-| B | s1 → s3 → s4 | udp/5002 |
-| Live | follows **active** path | udp/5003 |
+| Route | Probe port | Role |
+|-------|------------|------|
+| s1 → s2 → s4 | udp/5001 | Candidate path |
+| s1 → s3 → s4 | udp/5002 | Candidate path |
+| follows active route | udp/5003 | Live traffic |
 
 ### Design decisions
 
-* **Path pinning by UDP port** — forward match `udp_dst`, echo match `udp_src`, so all paths can be measured at once.
-* **Two failure modes** — hard (`link down` → OpenFlow port status) vs soft (`tc netem` → only probes see it).
-* **Client reports, controller decides** — analysis stays next to the topology.
-* **Control off the data path** — OpenFlow on loopback; telemetry on a dedicated mgmt veth (`diamond.py --mgmt`).
-* **No ARP flooding** — static ARP + proactive flows (topology has a loop).
+* **Path pinning by UDP port**: forward match `udp_dst`, echo match `udp_src`, so all paths can be measured at once.
+* **Soft vs hard faults**: `tc netem` (probes see loss; link stays up) vs link removal / port-down (OpenFlow status).
+* **Client reports, controller decides**: analysis stays next to the topology.
+* **Control off the data path**: OpenFlow on loopback; telemetry on a dedicated mgmt veth (`diamond.py --mgmt`).
+* **No ARP flooding**: static ARP + proactive flows (the topology has a loop).
 
 ### Tech stack
 
 | Layer | Pieces |
 |-------|--------|
 | Probes | C++ `telemetry/{client,server,stats,report}.cpp`, `protocol.h` |
-| Controller | Python / Ryu 4.34 — `controller/ndpa_controller.py`, `analysis.py` |
-| Emulation | Mininet + Open vSwitch — `topology/diamond.py` |
+| Controller | Python / Ryu 4.34 (`controller/ndpa_controller.py`, `analysis.py`) |
+| Emulation | Mininet + Open vSwitch (`topology/diamond.py`) |
 | UI | Static `frontend/` served by Ryu WSGI |
-| CI | GitHub Actions — lint, C++ build/tests, Mininet path integration |
+| CI | GitHub Actions (lint, C++ build/tests, Mininet integration) |
 
 ---
 
@@ -104,11 +103,11 @@ protocol.h          shared 24-byte probe packet
 telemetry/          C++ client, reflector, stats, Makefile
 controller/         Ryu app + path classifier
 frontend/           live dashboard (HTML/CSS/JS)
-topology/           Mininet diamond (+ optional topo.json from GUI)
-demo/               gui.sh (one-shot GUI) · d1_demo.sh (CLI) · helpers
+topology/           Mininet diamond topology
+demo/               runnable demos and helpers
 tests/              unit + integration
-eval/               D2 benchmark hooks
-docs/screenshots/   dashboard captures (filled after a live run)
+eval/               benchmark hooks
+docs/screenshots/   dashboard captures
 .github/workflows/  CI
 ```
 
@@ -140,17 +139,26 @@ python3 tests/test_analysis.py
 python3 tests/test_eval_metrics.py
 ```
 
-### 4. Demos (do not mix)
+### 4. Launch the live stack
 
-| Demo | Command | Behaviour |
-|------|---------|-----------|
-| **GUI (recommended)** | `./demo/gui.sh` | One command: starts Ryu in the background, asks for **sudo once**, runs the live fault demo, leaves an agent so dashboard **Demo/Run** work without passwordless sudo. Open http://127.0.0.1:8080/ndpa/ |
-| **GUI (agent only)** | `./demo/gui.sh --serve` | Ryu + root agent only; trigger faults from the dashboard buttons. |
-| **CLI (D1)** | `sudo ./demo/d1_demo.sh` | Self-contained. **Kills any existing `ndpa_controller`**, starts its own Ryu, asserts reroute, exits. Logs → `demo-logs/`. Do not use this for the live dashboard. |
+```bash
+./demo/gui.sh
+```
 
-> **Never** run `mn -c` while the dashboard Ryu is up — Mininet cleanup runs `killall ryu-manager`. `gui.sh` / `gui_demo.sh` / `gui_run.sh` avoid that.
+This starts the controller, brings up the Mininet diamond, runs probes, and opens the fault timeline. Dashboard: http://127.0.0.1:8080/ndpa/
 
-Pass `--datapath user` to the CLI demo if the OVS kernel module is unavailable. Set `RYU_MANAGER` to override the venv binary.
+```bash
+./demo/gui.sh --serve    # controller + agent only; drive faults from the UI
+./demo/gui.sh --hold 60  # longer watch window after the demo timeline
+```
+
+Headless end-to-end check (no dashboard):
+
+```bash
+sudo ./demo/d1_demo.sh
+```
+
+Set `RYU_MANAGER` if `ryu-manager` is not on `.venv/bin`. Pass `--datapath user` when the OVS kernel module is unavailable.
 
 ---
 
@@ -159,39 +167,38 @@ Pass `--datapath user` to the CLI demo if the OVS kernel module is unavailable. 
 | # | Scenario | Trigger |
 |---|----------|---------|
 | 1 | Healthy baseline | No faults |
-| 2 | Soft degradation | `tc netem` delay / loss on a path |
-| 3 | Hard failure | `link down` mid-transfer |
-| 4 | Recovery | Link / netem restored |
+| 2 | Soft failure | Blackhole / `tc netem` loss on a path (link stays up) |
+| 3 | Hard failure | Link removed or port down mid-transfer |
+| 4 | Recovery | Fault cleared |
 
-**Metrics:** RTT and loss per path (before/after reroute), detection time, recovery time.  
-**Baseline (D2):** static shortest path without reroute, same traffic.
+**Metrics:** RTT and loss per path (before/after reroute), detection time, recovery time.
 
 ---
 
 ## Screenshots
 
-Captured from a live `sudo ./demo/gui_demo.sh` run against Ryu at `/ndpa/` (real C++ probes + Mininet diamond).
+From a live GUI run against Ryu at `/ndpa/` (real C++ probes + Mininet diamond).
 
 | # | Capture | What it shows |
 |---|---------|----------------|
-| 1 | Baseline | Both paths healthy; live traffic on **A** |
-| 2 | Soft blackhole | Path **A** failed (100% loss); live moved to **B** |
-| 3 | Hard link-down | Path **B** failed (`port … down`); live back on **A**; PORT / CLASSIFY / REROUTE events |
+| 1 | Baseline | Both paths healthy; live on s1→s2→s4 |
+| 2 | Soft blackhole | Path s1→s2→s4 failed (100% loss); live moved to s1→s3→s4 |
+| 3 | Hard failure | Alternate path failed on port-down; PORT / CLASSIFY / REROUTE events |
 | 4 | Metrics | RTT min/avg/max, jitter, loss after recovery |
 
-### 1 — Baseline (healthy)
+### Baseline
 
-![Baseline — both paths healthy, live on A](docs/screenshots/01-dashboard-baseline.png)
+![Baseline: both paths healthy](docs/screenshots/01-dashboard-baseline.png)
 
-### 2 — Path A failed → reroute to B
+### Soft blackhole and reroute
 
-![Path A failed, live traffic on B](docs/screenshots/02-path-a-failed-reroute.png)
+![Path failed, live traffic moved](docs/screenshots/02-path-a-failed-reroute.png)
 
-### 3 — Path B link down + event log
+### Hard failure and event log
 
-![Path B failed on port down, events show REROUTE](docs/screenshots/03-events-reroute.png)
+![Port-down failure with REROUTE events](docs/screenshots/03-events-reroute.png)
 
-### 4 — Paths table metrics
+### Paths table metrics
 
 ![Paths table with RTT / jitter / loss](docs/screenshots/04-paths-table-metrics.png)
 
@@ -199,72 +206,32 @@ Captured from a live `sudo ./demo/gui_demo.sh` run against Ryu at `/ndpa/` (real
 
 ## Video demo
 
-Record a short walkthrough (CLI and/or GUI):
-
-1. Start the chosen demo (`d1_demo.sh` or Ryu + `gui_demo.sh`).
-2. Show healthy paths and live traffic on the dashboard.
-3. Soft-fail path A (`tc netem`), then hard-fail path B (`link down`); show CLASSIFY + REROUTE.
-4. Restore and show recovery / hold behaviour.
-
-Upload to your course portal or link a private Drive/YouTube URL here when ready:
-
 ```text
 Video: <add link after recording>
 ```
 
-Tip: `./demo/gui.sh --hold 60` leaves a longer watch window after the fault timeline.
+Suggested walkthrough: start `./demo/gui.sh`, show healthy paths, blackhole one path, show classification and reroute, clear the fault, show recovery.
 
 ---
 
 ## Team contributions
 
-Contributors on GitHub: [LonelyGuy-SE1](https://github.com/LonelyGuy-SE1), [divyansi](https://github.com/divyansi).
-
-| Member | Focus areas (repo / delivery) |
-|--------|--------------------------------|
-| **LonelyGuy-SE1** | C++ probe engine, Ryu controller & analysis, Mininet topology, integration demos (`d1_demo` / `gui_demo`), live dashboard, CI |
-| **Divyansi** | Early repository / project setup contributions |
-
-*Adjust this table to match your official team roster and mark-sheet roles before submission.*
+| Member | Focus |
+|--------|--------|
+| [LonelyGuy-SE1](https://github.com/LonelyGuy-SE1) | Probe engine, Ryu controller and analysis, Mininet topology, demos, dashboard, CI |
+| [divyansi](https://github.com/divyansi) | Early repository and project setup |
 
 ---
 
-## CI / CD
+## CI
 
 [![CI](https://github.com/LonelyGuy-SE1/network-diagnostic-and-path-analysis/actions/workflows/ci.yml/badge.svg)](https://github.com/LonelyGuy-SE1/network-diagnostic-and-path-analysis/actions/workflows/ci.yml)
-[![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-CI-2088FF?logo=githubactions&logoColor=white)](.github/workflows/ci.yml)
 
-Workflow: [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — runs on every **pull request**, every **push to `main`**, and on **manual `workflow_dispatch`**.
+Workflow: [`.github/workflows/ci.yml`](.github/workflows/ci.yml)
 
-| Job | Trigger | What it runs |
-|-----|---------|----------------|
-| **Lint** | always | `py_compile` + `flake8` on tracked Python |
-| **Build and unit tests** | always | `make -C telemetry all test`, analysis + eval unit tests |
-| **Mininet integration** | after lint+build | OVS/Mininet install, `tests/integration/test_paths.py`, log artifact |
-| **D1 controller demo** | `main` push or manual dispatch | Full `./demo/d1_demo.sh --datapath user` with Ryu 4.34 |
-
-There is no separate deploy/CD stage — this is a research/demo stack. “Release” is merging to `main` with a green CI badge. Use **Actions → CI → Run workflow** to re-run the heavier D1 job without a commit.
-
----
-
-## Execution plan
-
-### Phase 1 — Telemetry (done)
-
-Packet format, multi-port probing, RTT / loss / jitter, TCP reports to the controller.
-
-### Phase 2 — Controller & analysis (done)
-
-Topology discovery, path pinning, ingest, port status, classify / compare / reroute.
-
-### Phase 3 — Topology, demos, dashboard (done for D1)
-
-Diamond topology, CLI + GUI demos, live `/ndpa/` UI. D2: broader CSV/plots under `eval/`.
-
----
-
-## Rules of engagement
-
-* Work on a branch or fork; open a PR for every contribution.
-* Test your module in isolation before integration.
-* Prefer Ubuntu LTS to avoid namespace / OVS conflicts.
+| Job | What it runs |
+|-----|----------------|
+| **Lint** | `py_compile` + `flake8` |
+| **Build and unit tests** | C++ build/tests, analysis and eval unit tests |
+| **Mininet integration** | Path-pinning integration test |
+| **Controller demo** | Full `d1_demo` on `main` pushes (also runnable via Actions → Run workflow) |
