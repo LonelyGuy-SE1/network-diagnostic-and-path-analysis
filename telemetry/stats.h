@@ -14,7 +14,7 @@ struct PathSnapshot {
     uint64_t duplicates = 0;
     uint64_t reordered = 0;
     uint64_t late = 0;        // echoes arriving after their timeout
-    double rtt_min_ms = 0, rtt_avg_ms = 0, rtt_max_ms = 0;  // over the window
+    double rtt_min_ms = 0, rtt_avg_ms = 0, rtt_max_ms = 0;  // min/max: session extrema; avg: window
     double jitter_ms = 0;     // RFC 3550 smoothed estimate
     double loss_pct = 0;      // over the window, by missing seq
     uint32_t window_size = 0; // resolved probes counted in the window
@@ -48,6 +48,9 @@ private:
     bool any_rx_ = false;
     double jitter_ms_ = 0;
     double last_rtt_ms_ = -1;
+    double life_min_ms_ = 0;
+    double life_max_ms_ = 0;
+    bool any_ok_ = false;
 };
 
 }  // namespace ndpa

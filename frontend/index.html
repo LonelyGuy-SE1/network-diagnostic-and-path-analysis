@@ -4,6 +4,9 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>NDPA dashboard</title>
+  <link rel="icon" type="image/png" href="/ndpa/favicon.png">
+  <link rel="shortcut icon" href="/ndpa/favicon.ico">
+  <link rel="apple-touch-icon" href="/ndpa/favicon.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@500;700&display=swap" rel="stylesheet">
@@ -14,9 +17,12 @@
     <header>
       <div class="brand">
         <h1>NDPA</h1>
-        <p>Live Ryu + C++ probes. Start once with <code>./demo/gui.sh</code> (one sudo). Then <b>Run</b> / <b>Demo</b> work from here. Separate CLI check: <code>sudo ./demo/d1_demo.sh</code>.</p>
+        <p>Draw the graph, then <b>Start</b> to bring up Mininet and probes. Path colours come from live measurements. <b>Blackhole</b> drops probes on a path. Inventory <b>del</b> on a live link takes that link down; <b>+ Link</b> on the same pair brings it back up.</p>
       </div>
-      <div class="status-card"><div id="status">connecting…</div></div>
+      <div class="status-card">
+        <div id="status">checking backend…</div>
+        <ul id="health-list" class="health-list"></ul>
+      </div>
     </header>
 
     <div class="grid">
@@ -27,8 +33,7 @@
             <button type="button" id="add-sw" class="primary">+ Switch</button>
             <button type="button" id="add-host" class="primary">+ Host</button>
             <button type="button" id="reset" class="danger">Reset</button>
-            <button type="button" id="run" class="warn">Run</button>
-            <button type="button" id="demo" class="primary">Demo</button>
+            <button type="button" id="run" class="warn">Start</button>
           </div>
         </div>
         <div class="row">
@@ -43,11 +48,11 @@
         </div>
         <svg id="svg" viewBox="0 0 720 480" role="img" aria-label="Network topology"></svg>
         <div class="legend">
-          <span class="healthy">healthy (on a path)</span>
+          <span class="healthy">healthy</span>
           <span class="degraded">degraded</span>
-          <span class="failed">failed / down</span>
-          <span class="active">active live (thick blue)</span>
-          <span class="idle">idle (not on a path)</span>
+          <span class="failed">failed</span>
+          <span class="active">live traffic (thicker)</span>
+          <span class="idle">not on a measured path</span>
         </div>
       </section>
 
@@ -59,7 +64,16 @@
       </div>
 
       <section class="panel full paths">
-        <h2>Paths</h2>
+        <div class="panel-head">
+          <h2>Paths</h2>
+        </div>
+        <div class="fault-bar">
+          <label>Inject on
+            <select id="fault-path" title="Measured path"></select>
+          </label>
+          <button type="button" id="fault-blackhole" class="danger" title="Drop probes on this path (link stays up)">Blackhole</button>
+          <button type="button" id="fault-clear" class="primary" title="Clear netem on this path">Clear</button>
+        </div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -69,9 +83,9 @@
                 <th>Port</th>
                 <th>State</th>
                 <th>Reason</th>
-                <th>RTT min</th>
-                <th>RTT avg</th>
-                <th>RTT max</th>
+                <th title="Lowest successful probe RTT this session">RTT min</th>
+                <th title="Average RTT over the last ~40 probes">RTT avg</th>
+                <th title="Highest successful probe RTT this session">RTT max</th>
                 <th>Jitter</th>
                 <th>Loss</th>
               </tr>

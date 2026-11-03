@@ -54,15 +54,22 @@ def classify_sample(loss_pct, rtt_avg_ms):
     return HEALTHY, 'loss %.1f%%, rtt %.3f ms' % (loss_pct, rtt_avg_ms)
 
 
+def route_name(route):
+    """Stable path id from switch dpiids — never a hardcoded letter."""
+    return '-'.join('s%d' % d for d in route)
+
+
 class PathState:
     """State of one candidate path, driven by probe reports and port events."""
 
     def __init__(self, idx, route, probe_port, ports=()):
         self.idx = idx
-        self.name = chr(ord('A') + idx)
         self.route = list(route)              # dpids, e.g. [1, 2, 4]
+        self.name = route_name(self.route)    # e.g. s1-s2-s4
         self.probe_port = probe_port
-        self.ports = set(ports)               # (dpid, port) the path uses
+        # Inter-switch ports only — host attachment ports are shared by every
+        # path and must not flip the whole table to failed.
+        self.ports = set(ports)
         self.state = UNKNOWN
         self.reason = 'no reports yet'
         self.last = None                      # last sample dict
@@ -73,7 +80,7 @@ class PathState:
         self._count = 0
 
     def label(self):
-        return '%s (%s)' % (self.name, '-'.join('s%d' % d for d in self.route))
+        return self.name
 
     def _commit(self, state, reason):
         old = self.state
@@ -85,14 +92,21 @@ class PathState:
 
     def update(self, loss_pct, rtt_avg_ms, now, sample=None):
         """Feed one report. Returns the old state if the state changed, else None."""
+        if self.down:
+            # Port-down owns classification. Do not refresh last_report with
+            # sliding-window leftovers (stale low loss / shifting min/max RTT).
+            return None
+        # Full loss → no successful RTTs in the window; do not keep shifting
+        # min/max from leftover echoes (looks like RTT "moving the wrong way").
+        if sample is not None and float(sample.get('loss', loss_pct) or 0) >= 100.0:
+            sample = dict(sample)
+            sample['rtt_min'] = sample['rtt_avg'] = sample['rtt_max'] = None
+            sample['jitter'] = None
         self.last = sample if sample is not None else {'loss': loss_pct, 'rtt_avg': rtt_avg_ms}
         self.last_ts = now
         cand, reason = classify_sample(loss_pct, rtt_avg_ms)
         if cand != HEALTHY and self.first_bad_ts is None:
             self.first_bad_ts = now
-        if self.down:
-            # A down port wins over the probes until the port comes back.
-            return None
         if cand == self.state:
             self.reason = reason
             self._pending, self._count = None, 0
@@ -118,6 +132,13 @@ class PathState:
             self.down.add(key)
             if self.first_bad_ts is None:
                 self.first_bad_ts = now
+            # Drop stale window metrics so the table does not keep showing
+            # healthy loss/RTT while the path is hard-down.
+            self.last = {
+                'loss': 100.0, 'rtt_min': None, 'rtt_avg': None, 'rtt_max': None,
+                'jitter': None, 'port': self.probe_port,
+            }
+            self.last_ts = now
             if self.state != FAILED:
                 return self._commit(FAILED, 'port s%d:%d down' % key)
             self.reason = 'port s%d:%d down' % key

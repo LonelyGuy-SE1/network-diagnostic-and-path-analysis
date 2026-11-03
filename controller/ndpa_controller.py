@@ -11,7 +11,7 @@ What it does:
     PROBE_PORTS[i]: requests match udp_dst, echoes match udp_src. These
     probe flows never move, so each path keeps being measured.
   * All other IPv4 and ARP traffic between the two hosts ("live traffic")
-    follows the active path. It starts on path A.
+    follows the active path. It starts on the first discovered route (usually s1-s2-s4).
   * The C++ client reports per-path stats as JSON lines over TCP (REPORT_PORT).
   * analysis.py classifies each path healthy / degraded / failed from those
     reports and from OpenFlow port status, and decides when to move live
@@ -22,7 +22,6 @@ What it does:
       GET /ndpa/paths      path table, states, last reports, active path
       GET /ndpa/events     recent decisions with timestamps
       POST /ndpa/run       save topology/topo.json; enqueue Mininet via ./demo/gui.sh agent
-      POST /ndpa/demo      enqueue gui_demo via the same agent (no passwordless sudo)
       GET  /ndpa/demo/status  phase file written by gui_demo.py
 """
 import collections
@@ -36,11 +35,12 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND = os.path.join(_ROOT, 'frontend')
 TOPO_JSON = os.path.join(_ROOT, 'topology', 'topo.json')
 GUI_DEMO_STATUS = os.environ.get('NDPA_GUI_DEMO_STATUS', '/tmp/ndpa_gui_demo_status.json')
-# Root agent started by ./demo/gui.sh — dashboard Demo/Run enqueue here (no passwordless sudo).
+# Root agent started by ./demo/gui.sh — dashboard Start enqueues here (no passwordless sudo).
 AGENT_DIR = os.environ.get('NDPA_GUI_AGENT', '/tmp/ndpa_gui_agent')
 AGENT_HEART = os.path.join(AGENT_DIR, 'heartbeat')
 AGENT_REQ = os.path.join(AGENT_DIR, 'request.json')
-AGENT_HINT = 'stack not armed · run once: ./demo/gui.sh'
+AGENT_REPLY = os.path.join(AGENT_DIR, 'reply.json')
+AGENT_HINT = 'stack not armed. run once: ./demo/gui.sh'
 
 
 def _agent_ok():
@@ -52,23 +52,44 @@ def _agent_ok():
         return False
 
 
-def _enqueue_gui(op, hold=45):
-    """Ask the root gui agent to run demo|run. Returns (ok, message)."""
-    if op not in ('demo', 'run'):
-        return False, 'bad op'
+def _agent_reply():
+    try:
+        with open(AGENT_REPLY) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _enqueue_gui(payload):
+    """Ask the root gui agent (./demo/gui.sh) to do work. Returns (ok, message)."""
+    if not isinstance(payload, dict) or not payload.get('op'):
+        return False, 'bad request'
     if not _agent_ok():
         return False, AGENT_HINT
     os.makedirs(AGENT_DIR, exist_ok=True)
-    payload = {'op': op, 'hold': hold, 't': time.time()}
+    body = dict(payload)
+    body['id'] = '%.6f' % time.time()
     tmp = AGENT_REQ + '.tmp'
     try:
         with open(tmp, 'w') as f:
-            json.dump(payload, f)
+            json.dump(body, f)
             f.write('\n')
         os.rename(tmp, AGENT_REQ)
     except OSError as e:
         return False, str(e)
-    return True, 'queued %s' % op
+    deadline = time.time() + 25
+    while time.time() < deadline:
+        try:
+            with open(AGENT_REPLY) as f:
+                reply = json.load(f)
+            if reply.get('id') == body['id']:
+                if reply.get('ok'):
+                    return True, reply.get('detail') or ('queued %s' % body.get('op'))
+                return False, reply.get('detail') or reply.get('error') or 'agent refused'
+        except (OSError, ValueError):
+            pass
+        time.sleep(0.2)
+    return True, 'queued %s' % body.get('op')
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -87,8 +108,24 @@ from webob import Response  # noqa: E402
 
 SRC_IP = os.environ.get('NDPA_SRC_IP', '10.0.0.1')    # probe client host
 DST_IP = os.environ.get('NDPA_DST_IP', '10.0.0.2')    # reflector host
-PROBE_PORTS = [int(p) for p in os.environ.get('NDPA_PROBE_PORTS', '5001,5002').split(',')]
+LIVE_PORT = int(os.environ.get('NDPA_LIVE_PORT', '5003'))
 REPORT_PORT = int(os.environ.get('NDPA_REPORT_PORT', '9100'))
+
+
+def _probe_ports():
+    raw = os.environ.get('NDPA_PROBE_PORTS')
+    if raw:
+        return [int(p) for p in raw.split(',') if p.strip()]
+    # Skip the live-traffic port so a third discovered route still gets a probe.
+    out, p = [], 5001
+    while len(out) < 8:
+        if p != LIVE_PORT:
+            out.append(p)
+        p += 1
+    return out
+
+
+PROBE_PORTS = _probe_ports()
 PORT_STATS_PERIOD_S = 2.0
 
 PRIO_PROBE, PRIO_LIVE, PRIO_MISS = 200, 100, 0
@@ -119,12 +156,15 @@ class NdpaController(app_manager.RyuApp):
         self.hosts = {}                # ip -> (dpid, port, mac)
         self.paths = []                # analysis.PathState
         self.active = None             # index into self.paths for live traffic
+        self.src_ip = SRC_IP
+        self.dst_ip = DST_IP
         self.last_reroute = 0.0
         self.reroutes = []
         self.live = {}                 # non-probe ports the client reported, port -> sample
         self.port_counters = {}        # (dpid, port) -> counters
         self.reports = 0
         self.bad_reports = 0
+        self.starting_until = 0.0
         self.decisions = collections.deque(maxlen=200)   # not "events": RyuApp uses that name for its queue
         kwargs['wsgi'].register(NdpaRest, {'ndpa': self})
         hub.spawn(self._serve_reports)
@@ -137,13 +177,47 @@ class NdpaController(app_manager.RyuApp):
 
     # ---- switches and flows -------------------------------------------------
 
+    def reset_analysis(self, why='reset'):
+        """Drop path table and learned topology so a new Mininet run starts clean."""
+        self.paths = []
+        self.active = None
+        self.down_ports = set()
+        self.hosts = {}
+        self.live = {}
+        self.reroutes = []
+        self.last_reroute = 0.0
+        self.links = {}
+        self.adj = {}
+        self.link_ports = set()
+        self.note('PATHS', 'cleared path table (%s)' % why)
+
+    def _drop_switch_topo(self, dpid):
+        """Forget LLDP/port roles for one dpid. Same id comes back on the next
+        Mininet with different port numbers (host vs core), so sticky link_ports
+        would hide h2 behind an old inter-switch port."""
+        self.adj.pop(dpid, None)
+        for nbr in list(self.adj):
+            self.adj[nbr].pop(dpid, None)
+            if not self.adj[nbr]:
+                del self.adj[nbr]
+        self.links = {k: v for k, v in self.links.items()
+                      if k[0] != dpid and v[0] != dpid}
+        self.link_ports = {k for k in self.link_ports if k[0] != dpid}
+        self.down_ports = {k for k in self.down_ports if k[0] != dpid}
+
     @set_ev_cls(ofp_event.EventOFPStateChange, [MAIN_DISPATCHER, DEAD_DISPATCHER])
     def _state_change(self, ev):
         dp = ev.datapath
         if ev.state == MAIN_DISPATCHER:
+            self._drop_switch_topo(dp.id)
             self.dps[dp.id] = dp
         elif dp.id in self.dps:
             del self.dps[dp.id]
+            self.sw_ports.pop(dp.id, None)
+            self._drop_switch_topo(dp.id)
+            if not self.dps:
+                # Dataplane gone (Mininet stopped). Do not keep painting failed "live" paths.
+                self.reset_analysis('dataplane gone')
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def _features(self, ev):
@@ -190,6 +264,8 @@ class NdpaController(app_manager.RyuApp):
         self.link_ports.add(key)
         self.link_ports.add((dst.dpid, dst.port_no))
         self.note('TOPO', 'link %s:%d -> %s:%d' % (sw(src.dpid), src.port_no, sw(dst.dpid), dst.port_no))
+        # Hosts can be learned before LLDP finishes; retry once the graph has a route.
+        self._maybe_build_paths()
 
     @set_ev_cls(topo_event.EventLinkDelete)
     def _link_delete(self, ev):
@@ -249,24 +325,67 @@ class NdpaController(app_manager.RyuApp):
 
     def _hops(self, route):
         """Forward (src->dst) and reverse hop lists of (dpid, out_port)."""
-        s_dp, s_port, _ = self.hosts[SRC_IP]
-        d_dp, d_port, _ = self.hosts[DST_IP]
+        s_dp, s_port, _ = self.hosts[self.src_ip]
+        d_dp, d_port, _ = self.hosts[self.dst_ip]
         fwd = [(route[i], self.adj[route[i]][route[i + 1]]) for i in range(len(route) - 1)]
         fwd.append((route[-1], d_port))
         rev = [(route[i], self.adj[route[i]][route[i - 1]]) for i in range(len(route) - 1, 0, -1)]
         rev.append((route[0], s_port))
         return fwd, rev
 
+    def _core_ports(self, fwd, rev):
+        """Inter-switch ports only (exclude host edges shared by every path)."""
+        host_ports = {(h[0], h[1]) for h in self.hosts.values()}
+        return [hp for hp in (fwd + rev) if hp not in host_ports]
+
+    def _fault_intf(self, route):
+        """Mininet OVS netdev to hit with tc/netem for soft faults (middle hop)."""
+        if len(route) < 3:
+            return None
+        mid, nxt = route[1], route[2]
+        port = self.adj.get(mid, {}).get(nxt)
+        if port is None:
+            return None
+        return '%s-eth%d' % (sw(mid), port)
+
+    def _route_ready(self, route):
+        """True when both directions of every hop are in adj (LLDP finished)."""
+        for i in range(len(route) - 1):
+            a, b = route[i], route[i + 1]
+            if b not in self.adj.get(a, {}) or a not in self.adj.get(b, {}):
+                return False
+        return True
+
     def _maybe_build_paths(self):
-        if self.paths or SRC_IP not in self.hosts or DST_IP not in self.hosts:
+        # Once discovered, paths stay for the lifetime of this controller —
+        # failed/broken still appear in /ndpa/paths until the process exits.
+        if self.src_ip not in self.hosts or self.dst_ip not in self.hosts:
             return
-        routes = analysis.simple_paths(self.adj, self.hosts[SRC_IP][0], self.hosts[DST_IP][0])
+        routes = [r for r in analysis.simple_paths(
+            self.adj, self.hosts[self.src_ip][0], self.hosts[self.dst_ip][0]
+        ) if self._route_ready(r)]
         if not routes:
-            self.note('PATHS', 'no route %s -> %s yet' % (SRC_IP, DST_IP))
+            self.note('PATHS', 'no route %s -> %s yet' % (self.src_ip, self.dst_ip))
+            return
+        if self.paths:
+            have = {tuple(p.route) for p in self.paths}
+            extra = [r for r in routes if tuple(r) not in have]
+            for r in extra:
+                i = len(self.paths)
+                if i >= len(PROBE_PORTS):
+                    self.note('PATHS', '%d more route(s) without a probe port, ignored'
+                              % (len(extra) - extra.index(r)))
+                    break
+                fwd, rev = self._hops(r)
+                p = analysis.PathState(i, r, PROBE_PORTS[i], ports=self._core_ports(fwd, rev))
+                self.paths.append(p)
+                self.note('PATHS', 'path %s probe udp/%d' % (p.label(), p.probe_port))
+                self._install_probe(p)
             return
         for i, r in enumerate(routes[:len(PROBE_PORTS)]):
             fwd, rev = self._hops(r)
-            self.paths.append(analysis.PathState(i, r, PROBE_PORTS[i], ports=fwd + rev))
+            self.paths.append(analysis.PathState(
+                i, r, PROBE_PORTS[i], ports=self._core_ports(fwd, rev)))
         for p in self.paths:
             self.note('PATHS', 'path %s probe udp/%d' % (p.label(), p.probe_port))
             self._install_probe(p)
@@ -275,14 +394,14 @@ class NdpaController(app_manager.RyuApp):
                       % (len(routes) - len(PROBE_PORTS)))
         self.active = 0
         self._install_live(self.paths[0])
-        self.note('ACTIVE', 'live traffic %s <-> %s on path %s' % (SRC_IP, DST_IP, self.paths[0].label()))
+        self.note('ACTIVE', 'live traffic %s <-> %s on %s' % (self.src_ip, self.dst_ip, self.paths[0].label()))
 
     def _install_probe(self, p):
         fwd, rev = self._hops(p.route)
         parser = self.dps[p.route[0]].ofproto_parser
-        m_fwd = parser.OFPMatch(eth_type=ETH_IP, ipv4_src=SRC_IP, ipv4_dst=DST_IP,
+        m_fwd = parser.OFPMatch(eth_type=ETH_IP, ipv4_src=self.src_ip, ipv4_dst=self.dst_ip,
                                 ip_proto=PROTO_UDP, udp_dst=p.probe_port)
-        m_rev = parser.OFPMatch(eth_type=ETH_IP, ipv4_src=DST_IP, ipv4_dst=SRC_IP,
+        m_rev = parser.OFPMatch(eth_type=ETH_IP, ipv4_src=self.dst_ip, ipv4_dst=self.src_ip,
                                 ip_proto=PROTO_UDP, udp_src=p.probe_port)
         for dpid, port in fwd:
             self._out(dpid, PRIO_PROBE, m_fwd, port, COOKIE_PROBE + p.idx)
@@ -294,7 +413,7 @@ class NdpaController(app_manager.RyuApp):
         so the ingress switch only turns traffic over once the rest is ready."""
         fwd, rev = self._hops(p.route)
         parser = self.dps[p.route[0]].ofproto_parser
-        for hops, s, d in ((fwd, SRC_IP, DST_IP), (rev, DST_IP, SRC_IP)):
+        for hops, s, d in ((fwd, self.src_ip, self.dst_ip), (rev, self.dst_ip, self.src_ip)):
             for dpid, port in reversed(hops):
                 self._out(dpid, PRIO_LIVE, parser.OFPMatch(eth_type=ETH_IP, ipv4_src=s, ipv4_dst=d),
                           port, COOKIE_LIVE)
@@ -423,9 +542,15 @@ class NdpaController(app_manager.RyuApp):
     # ---- REST views --------------------------------------------------------
 
     def topology_view(self):
+        link_intfs = {}
+        for (a, pa), (b, pb) in self.links.items():
+            key = '%s-%s' % tuple(sorted((sw(a), sw(b))))
+            link_intfs.setdefault(key, []).append('%s-eth%d' % (sw(a), pa))
         return {
+            'up': bool(self.dps) and bool(self.links),
             'switches': sorted(sw(d) for d in self.sw_ports),
             'links': sorted('%s:%d->%s:%d' % (sw(a[0]), a[1], sw(b[0]), b[1]) for a, b in self.links.items()),
+            'link_intfs': link_intfs,
             'hosts': {ip: {'switch': sw(h[0]), 'port': h[1], 'mac': h[2]} for ip, h in self.hosts.items()},
             'ports_down': sorted('%s:%d' % (sw(k[0]), k[1]) for k in self.down_ports),
         }
@@ -434,23 +559,93 @@ class NdpaController(app_manager.RyuApp):
         now = time.time()
         out = []
         for p in self.paths:
+            route = [sw(d) for d in p.route]
             out.append({
-                'name': p.name, 'route': [sw(d) for d in p.route], 'probe_port': p.probe_port,
+                'name': p.name, 'route': route, 'probe_port': p.probe_port,
                 'state': p.state, 'reason': p.reason, 'active': p.idx == self.active,
                 'last_report': p.last, 'report_age_s': round(now - p.last_ts, 1) if p.last_ts else None,
                 'ports_down': sorted('%s:%d' % (sw(k[0]), k[1]) for k in p.down),
                 'port_counters': {'%s:%d' % (sw(k[0]), k[1]): self.port_counters.get(k)
                                   for k in sorted(p.ports)},
+                'fault_intf': self._fault_intf(p.route),
             })
-        return {'active': self.paths[self.active].name if self.active is not None else None,
-                'paths': out, 'live': self.live, 'reroutes': self.reroutes,
-                'reports': self.reports, 'bad_reports': self.bad_reports,
-                'thresholds': {'degraded_loss_pct': analysis.DEGRADED_LOSS_PCT,
-                               'failed_loss_pct': analysis.FAILED_LOSS_PCT,
-                               'degraded_rtt_ms': analysis.DEGRADED_RTT_MS,
-                               'worse_reports': analysis.WORSE_REPORTS,
-                               'better_reports': analysis.BETTER_REPORTS,
-                               'hold_time_s': analysis.HOLD_TIME_S}}
+        active = self.paths[self.active] if self.active is not None else None
+        return {
+            'active': active.name if active else None,
+            'active_route': [sw(d) for d in active.route] if active else None,
+            'active_state': active.state if active else None,
+            'src': self.src_ip, 'dst': self.dst_ip,
+            'paths': out, 'live': self.live, 'reroutes': self.reroutes,
+            'reports': self.reports, 'bad_reports': self.bad_reports,
+            'thresholds': {'degraded_loss_pct': analysis.DEGRADED_LOSS_PCT,
+                           'failed_loss_pct': analysis.FAILED_LOSS_PCT,
+                           'degraded_rtt_ms': analysis.DEGRADED_RTT_MS,
+                           'worse_reports': analysis.WORSE_REPORTS,
+                           'better_reports': analysis.BETTER_REPORTS,
+                           'hold_time_s': analysis.HOLD_TIME_S},
+        }
+
+    def health_view(self):
+        now = time.time()
+        agent = _agent_ok()
+        dataplane = bool(self.dps) and bool(self.links)
+        hosts_ok = self.src_ip in self.hosts and self.dst_ip in self.hosts
+        paths_ok = len(self.paths) >= 1
+        fresh = False
+        if self.paths:
+            ages = [now - p.last_ts for p in self.paths if p.last_ts]
+            fresh = bool(ages) and min(ages) < 8.0
+        starting = now < float(self.starting_until or 0)
+        reply = _agent_reply() or {}
+        reply_age = now - float(reply['ts']) if reply.get('ts') else 1e9
+        last_fail = None
+        if (reply.get('op') in ('run', 'demo') and reply.get('ok') is False
+                and reply_age < 60):
+            last_fail = reply.get('detail') or reply.get('error')
+            starting = False
+        checks = [
+            {'id': 'controller', 'ok': True, 'label': 'controller'},
+            {'id': 'agent', 'ok': agent, 'label': 'sudo helper (./demo/gui.sh)'},
+            {'id': 'dataplane', 'ok': dataplane, 'label': 'Mininet dataplane'},
+            {'id': 'hosts', 'ok': hosts_ok, 'label': 'probe hosts learned'},
+            {'id': 'paths', 'ok': paths_ok, 'label': 'paths discovered'},
+            {'id': 'probes', 'ok': fresh, 'label': 'probe reports'},
+        ]
+        if not agent:
+            action, message = 'gui.sh', 'Run ./demo/gui.sh in a terminal (asks for sudo once). Then press Start.'
+        elif not dataplane:
+            if starting:
+                action, message = 'wait', 'Start is running. Waiting for Mininet switches to connect.'
+            elif last_fail:
+                action, message = 'start', 'Last Start failed: %s Press Start to retry.' % last_fail
+            else:
+                action, message = 'start', 'Press Start to bring up Mininet and the C++ probes.'
+        elif not hosts_ok:
+            missing = [ip for ip in (self.src_ip, self.dst_ip) if ip not in self.hosts]
+            action, message = 'wait', 'Dataplane is up. Waiting to learn host(s) %s.' % ', '.join(missing)
+        elif not paths_ok:
+            action, message = 'wait', 'Hosts are known. Waiting for a route between them.'
+        elif not fresh:
+            if starting:
+                action, message = 'wait', 'Dataplane is up. Waiting for C++ probe reports.'
+            else:
+                action, message = 'start', 'No fresh probe reports. Press Start to relaunch the probes.'
+        else:
+            action, message = 'ready', 'Ready. Path colours and the table are live measurements.'
+            self.starting_until = 0.0
+        return {
+            'ok': action == 'ready',
+            'action': action,
+            'message': message,
+            'agent': agent,
+            'dataplane': dataplane,
+            'hosts': hosts_ok,
+            'paths': paths_ok,
+            'probes': fresh,
+            'checks': checks,
+            'switches': len(self.dps),
+            'n_paths': len(self.paths),
+        }
 
 
 class NdpaRest(ControllerBase):
@@ -493,6 +688,18 @@ class NdpaRest(ControllerBase):
     def app_js(self, req, **kwargs):
         return self._file(os.path.join(FRONTEND, 'app.js'))
 
+    @route('ndpa', '/ndpa/favicon.png', methods=['GET', 'HEAD'])
+    def favicon_png(self, req, **kwargs):
+        return self._file(os.path.join(FRONTEND, 'favicon.png'))
+
+    @route('ndpa', '/ndpa/favicon.ico', methods=['GET', 'HEAD'])
+    def favicon_ico(self, req, **kwargs):
+        return self._file(os.path.join(FRONTEND, 'favicon.ico'))
+
+    @route('ndpa', '/ndpa/health', methods=['GET'])
+    def health(self, req, **kwargs):
+        return self._json(self.app.health_view())
+
     @route('ndpa', '/ndpa/topology', methods=['GET'])
     def topology(self, req, **kwargs):
         return self._json(self.app.topology_view())
@@ -505,9 +712,19 @@ class NdpaRest(ControllerBase):
     def events(self, req, **kwargs):
         return self._json(list(self.app.decisions))
 
+    def _apply_probe_pair(self, data):
+        probe = (data or {}).get('probe') or {}
+        by_name = {h.get('name'): h for h in (data or {}).get('hosts') or [] if h.get('name')}
+        src = by_name.get(probe.get('src')) or {}
+        dst = by_name.get(probe.get('dst')) or {}
+        if src.get('ip'):
+            self.app.src_ip = str(src['ip']).split('/')[0]
+        if dst.get('ip'):
+            self.app.dst_ip = str(dst['ip']).split('/')[0]
+
     @route('ndpa', '/ndpa/run', methods=['POST'])
     def run_topo(self, req, **kwargs):
-        """GUI Run: save topology/topo.json, enqueue Mininet via gui agent."""
+        """Apply the editor graph: save topo.json, reset analysis, start Mininet + probes."""
         try:
             data = json.loads(req.body.decode() if req.body else '{}')
             with open(TOPO_JSON, 'w') as f:
@@ -516,11 +733,15 @@ class NdpaRest(ControllerBase):
         except (ValueError, OSError, UnicodeDecodeError) as e:
             return Response(status=400, content_type='application/json',
                             body=json.dumps({'error': str(e)}).encode())
-        ok, detail = _enqueue_gui('run')
+        self._apply_probe_pair(data)
+        ok, detail = _enqueue_gui({'op': 'run'})
         if ok:
-            self.app.note('PATHS', 'gui Run queued via ./demo/gui.sh agent')
+            self.app.starting_until = time.time() + 60
+            self.app.reset_analysis('Start')
+            self.app.note('PATHS', 'Start queued · probe %s -> %s' % (self.app.src_ip, self.app.dst_ip))
             return self._json({'ok': True, 'started': True,
-                               'message': 'Mininet starting · topo saved'})
+                               'message': 'starting dataplane + probes'})
+        self.app.starting_until = 0.0
         return Response(status=503, content_type='application/json',
                         body=json.dumps({
                             'ok': False, 'started': False,
@@ -528,21 +749,47 @@ class NdpaRest(ControllerBase):
                             'message': 'topo saved · ' + detail,
                         }).encode())
 
-    @route('ndpa', '/ndpa/demo', methods=['POST'])
-    def demo_start(self, req, **kwargs):
-        """Enqueue gui_demo via ./demo/gui.sh agent (real probes + faults)."""
-        ok, detail = _enqueue_gui('demo')
+    @route('ndpa', '/ndpa/fault', methods=['POST'])
+    def fault(self, req, **kwargs):
+        """Soft/hard fault injection via the root agent (tc netem / link down).
+
+        Body: {action: degrade|blackhole|clear|link_down|link_up,
+               path?: name, intf?: "s2-eth2", loss_pct?: 15}
+        """
+        try:
+            data = json.loads(req.body.decode() if req.body else '{}')
+        except (ValueError, UnicodeDecodeError) as e:
+            return Response(status=400, content_type='application/json',
+                            body=json.dumps({'error': str(e)}).encode())
+        action = data.get('action') or data.get('op')
+        if action not in ('degrade', 'blackhole', 'clear', 'link_down', 'link_up'):
+            return Response(status=400, content_type='application/json',
+                            body=json.dumps({'error': 'bad action'}).encode())
+        intf = data.get('intf')
+        path_name = data.get('path')
+        if not intf and path_name:
+            for p in self.app.paths:
+                if p.name == path_name or analysis.route_name(p.route) == path_name:
+                    intf = self.app._fault_intf(p.route)
+                    break
+        if not intf:
+            return Response(status=400, content_type='application/json',
+                            body=json.dumps({
+                                'error': 'need intf or known path',
+                                'hint': 'pick a path with fault_intf from /ndpa/paths',
+                            }).encode())
+        loss = float(data.get('loss_pct', 15 if action == 'degrade' else 100))
+        ok, detail = _enqueue_gui({
+            'op': 'fault', 'action': action, 'intf': intf,
+            'loss_pct': loss, 'path': path_name,
+        })
         if not ok:
             return Response(status=503, content_type='application/json',
-                            body=json.dumps({
-                                'ok': False, 'error': detail,
-                                'message': detail,
-                            }).encode())
-        self.app.note('PATHS', 'GUI demo queued via agent — watch CLASSIFY/REROUTE')
-        return self._json({
-            'ok': True, 'demo': True,
-            'message': 'GUI demo started · real probes + faults · watch paths/events',
-        })
+                            body=json.dumps({'ok': False, 'error': detail,
+                                             'message': detail}).encode())
+        self.app.note('FAULT', '%s on %s (loss=%s)' % (action, intf, loss))
+        return self._json({'ok': True, 'action': action, 'intf': intf,
+                           'loss_pct': loss, 'message': detail})
 
     @route('ndpa', '/ndpa/demo/status', methods=['GET'])
     def demo_status(self, req, **kwargs):

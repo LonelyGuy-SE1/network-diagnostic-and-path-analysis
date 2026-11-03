@@ -67,6 +67,20 @@ static void window_slides() {
     CHECK_NEAR(r.rtt_avg_ms, 2, 1e-9);
 }
 
+static void lifetime_extrema() {
+    // min/max are session extrema so they do not twitch as the window slides.
+    PathStats s(2, 10 * MS);
+    s.on_send(0, 0); s.on_echo(0, 5 * MS);             // 5 ms
+    s.on_send(1, 10 * MS); s.on_echo(1, 20 * MS);       // 10 ms
+    CHECK_NEAR(s.snapshot().rtt_min_ms, 5, 1e-9);
+    CHECK_NEAR(s.snapshot().rtt_max_ms, 10, 1e-9);
+    s.on_send(2, 30 * MS); s.on_echo(2, 37 * MS);       // 7 ms, window = {10, 7}
+    auto r = s.snapshot();
+    CHECK_NEAR(r.rtt_avg_ms, 8.5, 1e-9);
+    CHECK_NEAR(r.rtt_min_ms, 5, 1e-9);
+    CHECK_NEAR(r.rtt_max_ms, 10, 1e-9);
+}
+
 static void send_after_now_not_expired() {
     // A probe stamped after the caller read the clock must not underflow.
     PathStats s(10, 100 * MS);
@@ -81,6 +95,7 @@ int main() {
     loss_by_missing_seq();
     duplicates_reorder_late();
     window_slides();
+    lifetime_extrema();
     std::printf("test_stats: %s\n", g_failures ? "FAIL" : "ok");
     return g_failures != 0;
 }

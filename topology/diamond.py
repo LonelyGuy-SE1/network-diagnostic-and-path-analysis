@@ -75,7 +75,8 @@ class JsonTopo(Topo):
             mac = h.get('mac') or ('00:00:00:00:00:%02x' % i)
             nodes[name] = self.addHost(name, ip=ip, mac=mac)
         for a, b in spec.get('links', []):
-            self.addLink(nodes[a], nodes[b])
+            if a in nodes and b in nodes:
+                self.addLink(nodes[a], nodes[b])
 
 
 def load_topo():

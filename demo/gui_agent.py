@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Root helper for the GUI stack — run via ./demo/gui.sh (one sudo).
 
-Listens for demo/run requests from the Ryu dashboard so the web UI never
-needs passwordless sudo. Only accepts ops {demo, run}.
+Listens for Start (op=run) from the Ryu dashboard so the web UI never
+needs passwordless sudo.
 """
 from __future__ import print_function
 
@@ -20,12 +20,12 @@ REQ = os.path.join(AGENT_DIR, 'request.json')
 REPLY = os.path.join(AGENT_DIR, 'reply.json')
 HEART = os.path.join(AGENT_DIR, 'heartbeat')
 PID = os.path.join(AGENT_DIR, 'pid')
-GUI_DEMO = os.path.join(ROOT, 'demo', 'gui_demo.sh')
-GUI_RUN = os.path.join(ROOT, 'demo', 'gui_run.sh')
+GUI_DEMO_PY = os.path.join(ROOT, 'demo', 'gui_demo.py')
 LOG_DIR = os.path.join(ROOT, 'demo-logs', 'gui')
 
 _child = None
 _stop = False
+_last_op = None
 
 
 def log(msg):
@@ -59,29 +59,134 @@ def on_signal(signum, _frame):
             pass
 
 
-def run_op(op, hold=20, extra_args=None):
+def _stop_child():
     global _child
-    if _child and _child.poll() is None:
-        return False, 'busy · a Mininet job is already running'
-    if op == 'demo':
-        script = GUI_DEMO
-        args = [script, '--hold', str(hold)] + list(extra_args or [])
-    elif op == 'run':
-        script = GUI_RUN
-        args = [script]
-    else:
+    if _child is None:
+        return
+    if _child.poll() is None:
+        log('stopping previous job pid %s' % _child.pid)
+        try:
+            os.killpg(os.getpgid(_child.pid), signal.SIGTERM)
+        except OSError:
+            try:
+                _child.terminate()
+            except OSError:
+                pass
+        try:
+            _child.wait(timeout=4)
+        except Exception:
+            try:
+                os.killpg(os.getpgid(_child.pid), signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                _child.wait(timeout=2)
+            except Exception:
+                pass
+    _child = None
+    _cleanup_ifaces()
+
+
+def _cleanup_ifaces():
+    cleanup = os.path.join(ROOT, 'demo', 'gui_cleanup.sh')
+    if os.path.isfile(cleanup):
+        subprocess.call(['bash', cleanup], cwd=ROOT,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def _write_reply(payload):
+    body = dict(payload)
+    body.setdefault('t', time.strftime('%H:%M:%S'))
+    body.setdefault('ts', time.time())
+    atomic_write(REPLY, body)
+
+
+def _reap_child():
+    """If Mininet/probes died on their own, say so and wipe leftover veths."""
+    global _child
+    if _child is None:
+        return
+    rc = _child.poll()
+    if rc is None:
+        return
+    log('child exited %s' % rc)
+    if rc != 0:
+        _write_reply({
+            'ok': False, 'op': _last_op or 'run',
+            'detail': 'dataplane exited (code %s). leftover links cleaned; press Start to retry.' % rc,
+        })
+        _cleanup_ifaces()
+    _child = None
+
+
+def run_op(op, hold=20, extra_args=None):
+    global _child, _last_op
+    _stop_child()
+    if op not in ('run', 'demo'):
         return False, 'unknown op %r' % op
-    if not os.path.isfile(script):
-        return False, 'missing %s' % script
+    if not os.path.isfile(GUI_DEMO_PY):
+        return False, 'missing %s' % GUI_DEMO_PY
     os.makedirs(LOG_DIR, exist_ok=True)
-    logpath = os.path.join(LOG_DIR, '%s.log' % op)
-    log('starting %s → %s' % (op, logpath))
+    logpath = os.path.join(LOG_DIR, 'run.log')
+    log('starting Mininet + probes → %s' % logpath)
+    _cleanup_ifaces()
+    args = [sys.executable, GUI_DEMO_PY, '--idle'] + list(extra_args or [])
     with open(logpath, 'a') as lf:
         lf.write('\n--- agent %s at %s ---\n' % (op, time.strftime('%H:%M:%S')))
         lf.flush()
         _child = subprocess.Popen(args, cwd=ROOT, stdout=lf, stderr=subprocess.STDOUT,
                                   start_new_session=True)
+    _last_op = 'run'
     return True, 'started pid %d' % _child.pid
+
+
+def _have_iface(intf):
+    return subprocess.call(['ip', 'link', 'show', 'dev', intf],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+
+
+def apply_fault(req):
+    """Immediate tc/netem or link down — does not need a free Mininet child slot."""
+    action = req.get('action')
+    intf = req.get('intf')
+    if not intf or not isinstance(intf, str) or '/' in intf or '..' in intf:
+        return False, 'bad intf'
+    if not _have_iface(intf):
+        return False, 'interface %s not found · is Mininet up?' % intf
+    loss = float(req.get('loss_pct', 15))
+    try:
+        if action == 'degrade':
+            subprocess.check_call(
+                ['tc', 'qdisc', 'replace', 'dev', intf, 'root', 'netem',
+                 'loss', '%.1f%%' % loss],
+                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            return True, 'netem loss %.1f%% on %s' % (loss, intf)
+        if action == 'blackhole':
+            subprocess.check_call(
+                ['tc', 'qdisc', 'replace', 'dev', intf, 'root', 'netem', 'loss', '100%'],
+                stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            return True, 'netem loss 100%% on %s' % intf
+        if action == 'clear':
+            subprocess.call(['tc', 'qdisc', 'del', 'dev', intf, 'root'],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.call(['ip', 'link', 'set', intf, 'up'],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True, 'cleared soft/hard fault on %s' % intf
+        if action == 'link_down':
+            subprocess.call(['tc', 'qdisc', 'del', 'dev', intf, 'root'],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.check_call(['ip', 'link', 'set', intf, 'down'],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            return True, 'link down %s' % intf
+        if action == 'link_up':
+            subprocess.check_call(['ip', 'link', 'set', intf, 'up'],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+            subprocess.call(['tc', 'qdisc', 'del', 'dev', intf, 'root'],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return True, 'link up %s' % intf
+    except subprocess.CalledProcessError as e:
+        return False, 'fault cmd failed: %s' % e
+    return False, 'bad action %r' % action
 
 
 def consume_request():
@@ -91,7 +196,7 @@ def consume_request():
         with open(REQ) as f:
             req = json.load(f)
     except (OSError, ValueError) as e:
-        atomic_write(REPLY, {'ok': False, 'error': str(e)})
+        _write_reply({'ok': False, 'error': str(e)})
         try:
             os.unlink(REQ)
         except OSError:
@@ -102,22 +207,27 @@ def consume_request():
     except OSError:
         pass
     op = req.get('op')
-    hold = int(req.get('hold', 20))
-    ok, detail = run_op(op, hold=hold)
-    atomic_write(REPLY, {'ok': ok, 'op': op, 'detail': detail, 't': time.strftime('%H:%M:%S')})
-    log('request %s → %s' % (op, detail))
+    if op == 'fault':
+        ok, detail = apply_fault(req)
+    else:
+        hold = int(req.get('hold', 20))
+        ok, detail = run_op(op, hold=hold)
+    _write_reply({
+        'ok': ok, 'op': op, 'detail': detail, 'id': req.get('id'),
+    })
+    log('request %s -> %s' % (op, detail))
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--auto-demo', action='store_true',
-                    help='kick gui_demo once at startup')
+                    help=argparse.SUPPRESS)
     ap.add_argument('--hold', type=int, default=45,
-                    help='gui_demo hold window (seconds)')
+                    help=argparse.SUPPRESS)
     ap.add_argument('--serve-forever', action='store_true', default=True,
-                    help='keep listening for dashboard Demo/Run (default)')
+                    help='keep listening for dashboard Start (default)')
     ap.add_argument('--once', action='store_true',
-                    help='exit after auto-demo child finishes (no linger)')
+                    help='exit after the child finishes (no linger)')
     args = ap.parse_args()
     if args.once:
         args.serve_forever = False
@@ -140,21 +250,21 @@ def main():
     os.chmod(AGENT_DIR, 0o1777)
     atomic_write(PID, '%d\n' % os.getpid())
     beat()
-    log('listening in %s (dashboard Demo/Run need no passwordless sudo)' % AGENT_DIR)
+    log('listening in %s (dashboard Start needs no passwordless sudo)' % AGENT_DIR)
 
     if args.auto_demo:
-        ok, detail = run_op('demo', hold=args.hold)
-        atomic_write(REPLY, {'ok': ok, 'op': 'demo', 'detail': detail,
-                             't': time.strftime('%H:%M:%S')})
-        log('auto-demo: %s' % detail)
+        ok, detail = run_op('run')
+        _write_reply({'ok': ok, 'op': 'run', 'detail': detail})
+        log('auto-start: %s' % detail)
 
     while not _stop:
         beat()
         consume_request()
-        if args.once and _child is not None and _child.poll() is not None:
-            log('child exited %s — done' % _child.returncode)
-            break
-        if not args.serve_forever and _child is not None and _child.poll() is not None:
+        dead = _child is not None and _child.poll() is not None
+        rc = _child.returncode if dead else None
+        _reap_child()
+        if dead and (args.once or not args.serve_forever):
+            log('child exited %s — done' % rc)
             break
         time.sleep(0.4)
 

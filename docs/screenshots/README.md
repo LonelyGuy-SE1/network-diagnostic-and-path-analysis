@@ -1,6 +1,6 @@
 # Screenshots
 
-Live captures from `sudo ./demo/gui_demo.sh` against a running Ryu NDPA controller.
+Live captures from `./demo/gui.sh` against a running Ryu NDPA controller.
 
 | File | Phase |
 |------|--------|

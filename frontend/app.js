@@ -8,8 +8,12 @@
 
   let topo = defaultTopo();
   let paths = null;
-  let liveOn = false;   // path colours only after Run
+  let liveOn = false;   // path colours only while dataplane is up
+  let liveTopo = null;
+  let health = null;
+  let holdStatusUntil = 0;
   let drag = null;
+  const downIntfs = {};  // "s1-s2" -> ["s1-eth2", "s2-eth1"] remembered at del time
 
   function defaultTopo() {
     // Fixed diamond coordinates so the first paint is never a BFS guess.
@@ -85,8 +89,7 @@
 
     topo.links.forEach(([a, b]) => touch(a, b, {}));
 
-    // Overlay live port-down / path colours when controller is up.
-    if (paths && paths._portsDown) {
+    if (liveOn && paths && paths._portsDown) {
       Object.keys(edges).forEach((k) => {
         const e = edges[k];
         if (paths._portsDown[ukey(e.a, e.b)]) e.down = true;
@@ -144,15 +147,13 @@
 
   function edgeClass(a, b, meta) {
     if (meta.down) return { cls: 'edge down failed', tag: '' };
-    // Colours only after Run (or while a previous Run is still live).
     if (!liveOn) return { cls: 'edge', tag: '' };
 
-    let best = null, active = false, tags = [];
+    let best = null, active = false;
     (paths && paths.paths || []).forEach((p) => {
       const r = p.route || [];
       for (let i = 0; i < r.length - 1; i++) {
         if ((r[i] === a && r[i + 1] === b) || (r[i] === b && r[i + 1] === a)) {
-          tags.push(p.name);
           const st = p.state || 'unknown';
           if (!best || RANK[st] > RANK[best]) best = st;
           if (p.active || p.name === paths.active) active = true;
@@ -160,13 +161,8 @@
       }
     });
 
-    // Only edges on a discovered probe path get state colours.
-    // Active live path → thick blue. Everything else stays plain (not fake-green).
     if (best) {
-      return {
-        cls: ['edge', best].concat(active ? ['active'] : []).join(' '),
-        tag: tags.join('/')
-      };
+      return { cls: ['edge', best].concat(active ? ['active'] : []).join(' '), tag: '' };
     }
     return { cls: 'edge idle', tag: '' };
   }
@@ -238,33 +234,76 @@
     return Number(n).toFixed(d);
   }
 
+  function metricCells(p) {
+    const r = p.last_report || {};
+    const hardDown = (p.ports_down && p.ports_down.length) || /port .+ down/.test(p.reason || '');
+    const blackholed = Number(r.loss) >= 99.9;
+    // No RTT when nothing in the window answered — avoids min/max drifting
+    // from leftover echoes while the path is failed / blackholed.
+    if (hardDown || blackholed || r.rtt_avg == null) {
+      const loss = hardDown ? '100.0' : fmt(r.loss, 1);
+      return '<td>-</td><td>-</td><td>-</td><td>-</td><td>' + loss + '%</td>';
+    }
+    return '<td>' + fmt(r.rtt_min, 3) + '</td>'
+      + '<td>' + fmt(r.rtt_avg, 3) + '</td>'
+      + '<td>' + fmt(r.rtt_max, 3) + '</td>'
+      + '<td>' + fmt(r.jitter, 3) + '</td>'
+      + '<td>' + fmt(r.loss, 1) + '%</td>';
+  }
+
+  function liveLabel(view) {
+    if (!view) return null;
+    const route = view.active_route || (view.active ? String(view.active).split('-') : null);
+    if (!route || !route.length) return null;
+    const joined = Array.isArray(route) ? route.join(' → ') : route;
+    const st = view.active_state;
+    return st && st !== 'healthy' ? ('live ' + joined + ' [' + st + ']') : ('live ' + joined);
+  }
+
+  function fillFaultSelect(view) {
+    const sel = $('fault-path');
+    if (!sel) return;
+    const rows = (view && view.paths) || [];
+    const prev = sel.value;
+    sel.innerHTML = rows.length
+      ? rows.map((p) => {
+          const intf = p.fault_intf || '';
+          const label = (p.route || []).join('→') + (intf ? (' · ' + intf) : '');
+          return '<option value="' + p.name + '" data-intf="' + intf + '">' + label + '</option>';
+        }).join('')
+      : '<option value="">no paths yet</option>';
+    if (prev && rows.some((p) => p.name === prev)) sel.value = prev;
+  }
+
   function renderPaths(view) {
     const rows = (view && view.paths) || [];
+    fillFaultSelect(view);
     if (!rows.length) {
-      $('paths').innerHTML = '<tr><td colspan="10" class="muted">no paths yet · press Run or Demo</td></tr>';
+      $('paths').innerHTML = '<tr><td colspan="10" class="muted">no paths yet · press Start</td></tr>';
       if ($('path-meta')) $('path-meta').textContent = '';
       return;
     }
+    // Keep every discovered path row — failed/degraded stay visible for analysis.
     $('paths').innerHTML = rows.map((p) => {
-      const r = p.last_report || {};
       const live = !!(p.active || (view && p.name === view.active));
+      const pill = live
+        ? ('<span class="pill">' + (p.state === 'failed' || p.state === 'degraded'
+          ? ('live · ' + p.state) : 'live') + '</span>')
+        : '';
       return '<tr class="' + (live ? 'live' : '') + '">'
-        + '<td>' + p.name + (live ? '<span class="pill">live</span>' : '') + '</td>'
+        + '<td>' + (p.name || '-') + pill + '</td>'
         + '<td class="route">' + (p.route || []).join(' → ') + '</td>'
         + '<td>udp/' + (p.probe_port || '-') + '</td>'
         + '<td class="state ' + (p.state || '') + '">' + (p.state || '-') + '</td>'
         + '<td class="reason">' + (p.reason || '-') + '</td>'
-        + '<td>' + fmt(r.rtt_min, 3) + '</td>'
-        + '<td>' + fmt(r.rtt_avg, 3) + '</td>'
-        + '<td>' + fmt(r.rtt_max, 3) + '</td>'
-        + '<td>' + fmt(r.jitter, 3) + '</td>'
-        + '<td>' + fmt(r.loss, 1) + '%</td></tr>';
+        + metricCells(p) + '</tr>';
     }).join('');
     if ($('path-meta')) {
       const th = (view && view.thresholds) || {};
       const bits = [];
       if (view && view.src && view.dst) bits.push('probe ' + view.src + ' → ' + view.dst);
-      if (view && view.active) bits.push('active ' + view.active);
+      const live = liveLabel(view);
+      if (live) bits.push(live);
       if (th.degraded_loss_pct != null) {
         bits.push('degraded ≥' + th.degraded_loss_pct + '% loss / ≥'
           + th.degraded_rtt_ms + 'ms RTT');
@@ -277,14 +316,14 @@
 
   function renderEvents(list) {
     const keep = (list || []).filter((e) =>
-      /CLASSIFY|REROUTE|PORT|ACTIVE|PATHS|TOPO|HOST/.test(e.kind)
+      /CLASSIFY|REROUTE|PORT|ACTIVE|PATHS|TOPO|HOST|FAULT/.test(e.kind)
     ).slice(-120).reverse();
     $('events').innerHTML = keep.length
       ? keep.map((e) =>
           '<div class="ev"><span>' + e.t + '</span><span class="kind ' + e.kind + '">'
           + e.kind + '</span><span>' + e.msg + '</span></div>'
         ).join('')
-      : '<span class="muted">no events yet · press Run or Demo</span>';
+      : '<span class="muted">no events yet · press Start</span>';
   }
 
   function fillSelects() {
@@ -399,6 +438,7 @@
     const sw = topo.switches.find((s) => s === a || s === b);
     if (host && sw) host.switch = sw;
     refresh();
+    if (liveOn) restoreLiveLink(a, b);
   };
 
   function onProbeChange() {
@@ -406,9 +446,7 @@
     if (!src || !dst || src === dst) return;
     topo.probe = { src, dst };
     localStorage.setItem('ndpa-topo', JSON.stringify(topo));
-    // Re-Run colours if already live so the new pair is queried immediately.
-    if (liveOn) $('run').click();
-    else refresh();
+    refresh();
   }
   $('probe-src').onchange = onProbeChange;
   $('probe-dst').onchange = onProbeChange;
@@ -433,7 +471,6 @@
         topo.hosts.forEach((h) => {
           if ((pair[0] === h.name || pair[1] === h.name) &&
               (pair[0] === h.switch || pair[1] === h.switch)) {
-            // Dropped the only attachment link for this host?
             const still = topo.links.some((p) =>
               (p[0] === h.name || p[1] === h.name) &&
               (p[0] === h.switch || p[1] === h.switch)
@@ -441,6 +478,7 @@
             if (!still) h.switch = null;
           }
         });
+        if (liveOn) dropLiveLink(pair[0], pair[1]);
       }
     }
     refresh();
@@ -455,8 +493,81 @@
     refresh();
   };
 
+  function intfKey(a, b) {
+    return a < b ? a + '-' + b : b + '-' + a;
+  }
+
+  function rememberedIntfs(a, b) {
+    const key = intfKey(a, b);
+    const live = (liveTopo && liveTopo.link_intfs && liveTopo.link_intfs[key]) || [];
+    if (live.length) downIntfs[key] = live.slice();
+    return downIntfs[key] || live;
+  }
+
+  async function setLiveLink(a, b, action) {
+    const intfs = rememberedIntfs(a, b);
+    if (!intfs.length) {
+      $('status').textContent = action === 'link_down'
+        ? 'link removed from editor. Start to apply a new graph.'
+        : 'no live interface for this pair — del it first while the dataplane is up, then add it back.';
+      return;
+    }
+    let last = '', ok = true;
+    for (let i = 0; i < intfs.length; i++) {
+      const intf = intfs[i];
+      try {
+        const r = await fetch('/ndpa/fault', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: action, intf: intf })
+        });
+        const j = await r.json().catch(() => ({}));
+        last = j.message || j.error || (action + ' ' + intf);
+        if (!r.ok || j.ok === false) ok = false;
+      } catch (err) {
+        last = 'could not ' + action + ' on ' + intf;
+        ok = false;
+      }
+    }
+    if (action === 'link_up' && ok) delete downIntfs[intfKey(a, b)];
+    $('status').className = ok ? '' : 'err';
+    $('status').textContent = last;
+  }
+
+  function dropLiveLink(a, b) { return setLiveLink(a, b, 'link_down'); }
+  function restoreLiveLink(a, b) { return setLiveLink(a, b, 'link_up'); }
+
+  function applyHealth(h) {
+    health = h;
+    const list = $('health-list');
+    if (list && h && h.checks) {
+      list.innerHTML = h.checks.map((c) =>
+        '<li class="' + (c.ok ? 'ok' : 'bad') + '">' + (c.ok ? 'ok' : 'need') + '  ' + c.label + '</li>'
+      ).join('');
+    }
+    const startBtn = $('run');
+    const bh = $('fault-blackhole');
+    const cl = $('fault-clear');
+    if (startBtn) startBtn.disabled = !(h && h.agent);
+    if (bh) bh.disabled = !(h && h.agent && h.dataplane);
+    if (cl) cl.disabled = !(h && h.agent && h.dataplane);
+  }
+
+  function showHealthMessage(h) {
+    if (!h) return;
+    // Keep the "starting dataplane" line only while health still wants Start.
+    // wait/ready (or a real failure) must replace it so we do not bounce
+    // back to "Press Start" while Mininet is still coming up.
+    if (Date.now() < holdStatusUntil && h.action === 'start') return;
+    const el = $('status');
+    el.textContent = h.message || '';
+    el.className = h.ok ? 'ok' : (h.action === 'wait' ? 'warn' : 'err');
+  }
+
   $('run').onclick = async () => {
-    $('status').textContent = 'starting…';
+    $('status').className = 'warn';
+    $('status').textContent = 'starting dataplane…';
+    holdStatusUntil = Date.now() + 50000;
     localStorage.setItem('ndpa-topo', JSON.stringify(topo));
     try {
       const r = await fetch('/ndpa/run', {
@@ -465,70 +576,83 @@
         body: JSON.stringify(topo)
       });
       const body = await r.json().catch(() => ({}));
-      liveOn = true;
       if (!r.ok || body.ok === false) {
+        holdStatusUntil = 0;
         $('status').className = 'err';
         $('status').textContent = body.message || body.error
-          || ('Run failed · topo saved · start: ./demo/gui.sh --serve');
+          || 'Start failed. Run ./demo/gui.sh once so the agent can use sudo.';
+        liveOn = false;
       } else {
         $('status').className = '';
-        $('status').textContent = body.message || 'Mininet starting';
+        $('status').textContent = body.message || 'starting dataplane + probes';
       }
       tick();
     } catch (err) {
       liveOn = false;
       paths = null;
       $('status').className = 'err';
-      $('status').textContent = 'controller offline · start ryu-manager';
+      $('status').textContent = 'controller offline. start ./demo/gui.sh';
       draw();
     }
   };
 
-  $('demo').onclick = async () => {
-    // Queues work to the root agent from ./demo/gui.sh (no passwordless sudo).
-    $('status').textContent = 'starting GUI demo…';
+
+  async function sendFault(action, lossPct) {
+    const sel = $('fault-path');
+    const name = sel && sel.value;
+    if (!name) {
+      $('status').className = 'err';
+      $('status').textContent = 'no path selected for fault inject';
+      return;
+    }
+    const opt = sel.options[sel.selectedIndex];
+    const intf = opt && opt.getAttribute('data-intf');
+    $('status').textContent = 'injecting ' + action + '…';
     try {
-      const r = await fetch('/ndpa/demo', {
+      const body = { action: action, path: name };
+      if (intf) body.intf = intf;
+      if (lossPct != null) body.loss_pct = lossPct;
+      const r = await fetch('/ndpa/fault', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: '{}'
+        body: JSON.stringify(body)
       });
-      const body = await r.json().catch(() => ({}));
-      if (!r.ok || body.ok === false) {
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok || j.ok === false) {
         $('status').className = 'err';
-        $('status').textContent = body.message || body.error
-          || 'demo failed · start: ./demo/gui.sh';
+        $('status').textContent = j.message || j.error || 'fault failed · start: ./demo/gui.sh --serve';
         return;
       }
-      liveOn = true;
       $('status').className = '';
-      $('status').textContent = body.message || 'GUI demo running';
+      $('status').textContent = j.message || (action + ' on ' + (intf || name));
       tick();
     } catch (err) {
       $('status').className = 'err';
       $('status').textContent = 'controller offline · start: ./demo/gui.sh';
     }
-  };
+  }
+
+  if ($('fault-blackhole')) {
+    $('fault-blackhole').onclick = () => sendFault('blackhole', 100);
+    $('fault-clear').onclick = () => sendFault('clear');
+  }
 
   async function tick() {
     try {
-      const [t, p, e] = await Promise.all(
-        ['topology', 'paths', 'events'].map((x) =>
+      const [t, p, e, h] = await Promise.all(
+        ['topology', 'paths', 'events', 'health'].map((x) =>
           fetch('/ndpa/' + x).then((r) => {
             if (!r.ok) throw new Error(r.status);
             return r.json();
           })
         )
       );
-      // Real controller data only — never invent path rows client-side.
-      liveOn = true;
+      liveTopo = t;
+      applyHealth(h);
+      const up = !!(h && h.dataplane);
+      liveOn = up && !!(h && (h.paths || h.ok));
       paths = p;
       paths._portsDown = {};
-      (t.ports_down || []).forEach((raw) => {
-        // "s2:2" style — map to switch endpoints when we can.
-        const m = String(raw).match(/^(s\d+)/);
-        if (m) paths._portsDown[m[1]] = true;
-      });
       (t.links || []).forEach((raw) => {
         const [L, R] = String(raw).split('->');
         if (!L || !R) return;
@@ -536,32 +660,38 @@
           paths._portsDown[ukey(endpoint(L), endpoint(R))] = true;
         }
       });
-      let demoPhase = '';
-      try {
-        const ds = await fetch('/ndpa/demo/status').then((r) => r.ok ? r.json() : null);
-        if (ds && ds.phase && ds.phase !== 'idle' && ds.phase !== 'done') {
-          demoPhase = 'demo: ' + ds.phase;
-        }
-      } catch (e) {}
-      // Never clobber an explicit error from Run/Demo.
-      if ($('status').className !== 'err') {
-        $('status').className = '';
+      if (h && h.ok) {
+        holdStatusUntil = 0;
         const bits = [
-          (t.switches || []).length + ' live switches',
-          ((p.paths || []).length) + ' path(s)',
-          'active ' + (p.active || '-')
+          (t.switches || []).length + ' switches',
+          ((p.paths || []).length) + ' path(s)'
         ];
-        if (demoPhase) bits.push(demoPhase);
+        const live = liveLabel(p);
+        if (live) bits.push(live);
+        $('status').className = 'ok';
         $('status').textContent = bits.join(' · ');
+      } else {
+        showHealthMessage(h);
       }
-      // Failed paths stay in p.paths with state=failed — do not filter them out.
-      renderPaths(p);
+      renderPaths(liveOn ? p : { paths: (p && p.paths) || [], active: null });
       renderEvents(e);
       draw();
     } catch (err) {
-      if (!liveOn) {
+      liveOn = false;
+      applyHealth({
+        ok: false, action: 'gui.sh', agent: false, dataplane: false,
+        checks: [
+          { id: 'controller', ok: false, label: 'controller' },
+          { id: 'agent', ok: false, label: 'sudo helper (./demo/gui.sh)' },
+          { id: 'dataplane', ok: false, label: 'Mininet dataplane' },
+          { id: 'hosts', ok: false, label: 'probe hosts learned' },
+          { id: 'paths', ok: false, label: 'paths discovered' },
+          { id: 'probes', ok: false, label: 'probe reports' }
+        ]
+      });
+      if (Date.now() >= holdStatusUntil) {
         $('status').className = 'err';
-        $('status').textContent = 'controller offline · start ryu-manager for live paths';
+        $('status').textContent = 'Controller is not running. In a terminal: ./demo/gui.sh';
       }
     }
   }

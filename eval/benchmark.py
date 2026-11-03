@@ -94,7 +94,7 @@ def poll_paths():
     """(state of path A, active path, full view) or None if the controller does not answer."""
     try:
         v = rest('paths')
-        return {p['name']: p['state'] for p in v['paths']}.get('A'), v['active'], v
+        return {p['name']: p['state'] for p in v['paths']}.get('s1-s2-s4'), v['active'], v
     except (OSError, ValueError, KeyError):
         return None
 

@@ -39,6 +39,7 @@ BIN = os.path.join(ROOT, 'telemetry')
 APP = os.path.join(ROOT, 'controller', 'ndpa_controller.py')
 SERVER_IP = '10.0.0.2'
 PORT_A, PORT_B, PORT_LIVE = 5001, 5002, 5003
+PATH_S2, PATH_S3 = 's1-s2-s4', 's1-s3-s4'
 REPORT_PORT, REST_PORT = 9100, 8080
 REST = 'http://127.0.0.1:%d/ndpa/' % REST_PORT
 NETEM_INTF = 's2-eth2'            # s2 towards s4, requests on path A
@@ -132,7 +133,7 @@ class Demo:
         for s in ('s1', 's2', 's3', 's4'):
             self.save('flows-%s-%s.txt' % (phase.replace(' ', '_'), s),
                       self.net.get(s).cmd('ovs-ofctl -O OpenFlow13 dump-flows', s))
-        row = {'phase': phase, 'A': by['A']['state'], 'B': by['B']['state'], 'active': view['active'],
+        row = {'phase': phase, 'A': by[PATH_S2]['state'], 'B': by[PATH_S3]['state'], 'active': view['active'],
                'stats': {port: cs.get(port) for port in (PORT_A, PORT_B, PORT_LIVE)},
                'worst': self.worst_live_loss()}
         self.rows.append(row)
@@ -229,8 +230,8 @@ def run(args):
                 print('    ' + re.sub(r'(cookie|duration|n_bytes|idle_age|table)=[^,]*, ?', '', line.strip()))
         d.check('controller gets reports', view['reports'] > 0, '%d reports, %d bad' % (
             view['reports'], view['bad_reports']))
-        d.check('both paths healthy', bool(ok), 'A %s, B %s' % (by['A']['state'], by['B']['state']))
-        d.check('live on A', view['active'] == 'A', 'active %s' % view['active'])
+        d.check('both paths healthy', bool(ok), 'A %s, B %s' % (by[PATH_S2]['state'], by[PATH_S3]['state']))
+        d.check('live on s1-s2-s4', view['active'] == PATH_S2, 'active %s' % view['active'])
         d.check('live traffic clean', cs.get(PORT_LIVE, {}).get('loss', 100) <= 5,
                 'udp/5003 loss %.1f%%' % cs.get(PORT_LIVE, {}).get('loss', 100))
 
@@ -238,15 +239,15 @@ def run(args):
         d.mark()
         t0 = time.time()
         d.net.get('s2').cmd('tc qdisc replace dev %s root netem loss 100%%' % NETEM_INTF)
-        moved = wait_for(lambda: rest('paths')['active'] == 'B', 20)
+        moved = wait_for(lambda: rest('paths')['active'] == PATH_S3, 20)
         t_detect = time.time() - t0
         d.events()
         time.sleep(4)            # let the client's 2 s loss window refill
         view, by, cs = d.snapshot('A blackholed')
-        a = by['A']
+        a = by[PATH_S2]
         d.check('A classified failed by probes', a['state'] == 'failed' and not a['ports_down'],
                 '%s (%s), ports down: %s' % (a['state'], a['reason'], a['ports_down'] or 'none'))
-        d.check('live rerouted to B', bool(moved), 'after %.1f s' % t_detect)
+        d.check('live rerouted to s1-s3-s4', bool(moved), 'after %.1f s' % t_detect)
         live = cs[PORT_LIVE]['loss']
         d.check('live traffic recovered', live <= 5, 'udp/5003 loss %.1f%%' % live)
         d.check('A probes still pinned to A', cs[PORT_A]['loss'] >= 90,
@@ -258,21 +259,21 @@ def run(args):
         ok = wait_for(lambda: rest('paths')['paths'][0]['state'] == 'healthy', 20)
         d.events()
         view, by, cs = d.snapshot('A repaired')
-        d.check('A healthy again', bool(ok), by['A']['state'])
-        d.check('no flap back to A', view['active'] == 'B', 'active %s' % view['active'])
+        d.check('A healthy again', bool(ok), by[PATH_S2]['state'])
+        d.check('no flap back to s1-s2-s4', view['active'] == PATH_S3, 'active %s' % view['active'])
 
         phase('6. Fault: link s3-s4 down (live traffic is on B)')
         d.mark()
         t0 = time.time()
         net.configLinkStatus('s3', 's4', 'down')
-        moved = wait_for(lambda: rest('paths')['active'] == 'A', 10)
+        moved = wait_for(lambda: rest('paths')['active'] == PATH_S2, 10)
         t_detect = time.time() - t0
         d.events()
         time.sleep(4)
         view, by, cs = d.snapshot('B link down')
-        d.check('B failed from port status', by['B']['state'] == 'failed' and bool(by['B']['ports_down']),
-                '%s (%s)' % (by['B']['state'], by['B']['reason']))
-        d.check('live rerouted to A', bool(moved), 'after %.1f s' % t_detect)
+        d.check('B failed from port status', by[PATH_S3]['state'] == 'failed' and bool(by[PATH_S3]['ports_down']),
+                '%s (%s)' % (by[PATH_S3]['state'], by[PATH_S3]['reason']))
+        d.check('live rerouted to s1-s2-s4', bool(moved), 'after %.1f s' % t_detect)
         live = cs[PORT_LIVE]['loss']
         d.check('live traffic recovered', live <= 5, 'udp/5003 loss %.1f%%' % live)
 
@@ -282,7 +283,7 @@ def run(args):
         ok = wait_for(lambda: rest('paths')['paths'][1]['state'] == 'healthy', 20)
         d.events()
         view, by, cs = d.snapshot('B restored')
-        d.check('B healthy again', bool(ok), by['B']['state'])
+        d.check('B healthy again', bool(ok), by[PATH_S3]['state'])
 
         phase('Summary (client view, last 2 s window at each phase end)')
         table = d.table()

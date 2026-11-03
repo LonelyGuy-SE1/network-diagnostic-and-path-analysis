@@ -43,11 +43,10 @@ body {
 }
 
 header {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
   gap: 1rem;
-  align-items: stretch;
+  align-items: start;
 }
 
 .brand, .status-card {
@@ -71,14 +70,54 @@ header {
 }
 
 .status-card {
-  min-width: 220px;
+  width: 300px;
+  max-width: 300px;
+  min-height: 6.5rem;
   display: flex;
   flex-direction: column;
   justify-content: center;
+  position: sticky;
+  top: 1rem;
+  align-self: start;
 }
 
-#status { font-weight: 700; }
+#status {
+  font-weight: 700;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 5;
+  line-clamp: 5;
+  word-break: break-word;
+}
+
+@media (max-width: 720px) {
+  header { grid-template-columns: 1fr; }
+  .status-card { width: 100%; max-width: none; position: static; }
+}
 #status.err { color: var(--failed); }
+#status.ok { color: var(--healthy); }
+#status.warn { color: var(--degraded); }
+
+.health-list {
+  list-style: none;
+  margin: 0.55rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.2rem;
+  font: 700 0.72rem/1.3 var(--mono);
+}
+.health-list li { color: var(--muted); }
+.health-list li.ok { color: var(--healthy); }
+.health-list li.bad { color: var(--failed); }
+.health-list li::before { content: "· "; }
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: 2px 2px 0 var(--shadow);
+}
 
 .grid {
   display: grid;
@@ -157,8 +196,8 @@ header {
 .edge.healthy { stroke: var(--healthy); }
 .edge.degraded { stroke: var(--degraded); }
 .edge.failed, .edge.down { stroke: var(--failed); }
-/* Active live path: blue + thicker (must follow .healthy so it wins). */
-.edge.active { stroke: var(--live); stroke-width: 8; }
+/* Live = thicker. Health colour stays (failed live is thick red, not blue). */
+.edge.active { stroke-width: 8; }
 .edge.down { stroke-dasharray: 8 6; }
 .edge.draft { stroke: #666; stroke-dasharray: 5 5; }
 
@@ -204,7 +243,7 @@ header {
 .legend .healthy::before { background: var(--healthy); }
 .legend .degraded::before { background: var(--degraded); }
 .legend .failed::before { background: var(--failed); }
-.legend .active::before { background: var(--live); height: 0.55rem; }
+.legend .active::before { background: var(--healthy); height: 0.7rem; }
 .legend .idle::before { background: #999; }
 
 .mode-toggle {
@@ -412,3 +451,17 @@ tr.live { background: #dfe8ff; }
 .ev .kind.CLASSIFY { color: var(--live); }
 
 .muted { color: var(--muted); font-weight: 700; }
+
+.fault-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  align-items: end;
+  margin: 0 0 0.85rem;
+}
+.fault-bar label {
+  margin: 0;
+}
+.fault-bar select {
+  min-width: 16rem;
+}

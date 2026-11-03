@@ -145,11 +145,10 @@ python3 tests/test_eval_metrics.py
 ./demo/gui.sh
 ```
 
-This starts the controller, brings up the Mininet diamond, runs probes, and opens the fault timeline. Dashboard: http://127.0.0.1:8080/ndpa/
+This starts the controller and a root helper. Press **Start** on the dashboard to bring up Mininet and the C++ probes. Dashboard: http://127.0.0.1:8080/ndpa/
 
 ```bash
-./demo/gui.sh --serve    # controller + agent only; drive faults from the UI
-./demo/gui.sh --hold 60  # longer watch window after the demo timeline
+./demo/gui.sh --serve    # same: controller + agent; drive the graph from the UI
 ```
 
 Headless end-to-end check (no dashboard):

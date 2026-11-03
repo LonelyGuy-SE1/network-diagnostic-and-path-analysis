@@ -32,6 +32,9 @@ void PathStats::on_echo(uint32_t seq, uint64_t now_ns) {
     // For a round trip the transit difference is just the RTT difference.
     if (last_rtt_ms_ >= 0) jitter_ms_ += (std::fabs(rtt - last_rtt_ms_) - jitter_ms_) / 16.0;
     last_rtt_ms_ = rtt;
+    if (!any_ok_ || rtt < life_min_ms_) life_min_ms_ = rtt;
+    if (!any_ok_ || rtt > life_max_ms_) life_max_ms_ = rtt;
+    any_ok_ = true;
     push({seq, false, rtt});
 }
 
@@ -67,12 +70,14 @@ PathSnapshot PathStats::snapshot() const {
     double sum = 0;
     for (const auto& r : results_) {
         if (r.lost) { ++lost; continue; }
-        if (ok == 0 || r.rtt_ms < s.rtt_min_ms) s.rtt_min_ms = r.rtt_ms;
-        if (ok == 0 || r.rtt_ms > s.rtt_max_ms) s.rtt_max_ms = r.rtt_ms;
         sum += r.rtt_ms;
         ++ok;
     }
     if (ok) s.rtt_avg_ms = sum / ok;
+    if (any_ok_) {
+        s.rtt_min_ms = life_min_ms_;
+        s.rtt_max_ms = life_max_ms_;
+    }
     if (!results_.empty()) s.loss_pct = 100.0 * lost / results_.size();
     return s;
 }

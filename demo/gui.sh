@@ -1,26 +1,22 @@
 #!/usr/bin/env bash
 # One command for the live GUI stack.
 #
-#   ./demo/gui.sh              # start Ryu (bg) + root agent + auto demo
-#   ./demo/gui.sh --serve      # Ryu + agent only; use dashboard Demo/Run
-#   ./demo/gui.sh --hold 60    # longer watch window after faults
+#   ./demo/gui.sh              # start Ryu (bg) + root agent; dashboard Start applies the graph
+#   ./demo/gui.sh --serve      # same
 #
-# Prompts for sudo ONCE (agent). Dashboard buttons then work without
+# Prompts for sudo ONCE (agent). Dashboard Start then works without
 # passwordless sudo. Does not touch ./demo/d1_demo.sh.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-HOLD=45
-AUTO_DEMO=1
 SERVE_FOREVER=1
-EXTRA=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --serve) AUTO_DEMO=0; shift ;;
+    --serve) shift ;;
     --once) SERVE_FOREVER=0; shift ;;
-    --hold) HOLD="${2:?}"; shift 2 ;;
-    --datapath) EXTRA+=(--datapath "$2"); shift 2 ;;
+    --hold) shift 2 ;;  # leftover flag; Start no longer runs a canned timeline
+    --datapath) shift 2 ;;
     -h|--help)
       sed -n '2,12p' "$0"
       exit 0
@@ -67,15 +63,11 @@ else
   echo "[gui] Ryu already on :8080"
 fi
 
-AGENT_ARGS=(--hold "$HOLD")
-[[ "$AUTO_DEMO" -eq 1 ]] && AGENT_ARGS+=(--auto-demo)
+AGENT_ARGS=()
 [[ "$SERVE_FOREVER" -eq 0 ]] && AGENT_ARGS+=(--once)
-# Forward datapath to demo via request file env — gui_demo reads argv from agent only for auto path.
-# Auto-demo uses gui_demo.sh which accepts --datapath via EXTRA baked into a wrapper env.
-export NDPA_GUI_DEMO_EXTRA="${EXTRA[*]-}"
 
 echo "[gui] dashboard → http://127.0.0.1:8080/ndpa/"
-echo "[gui] starting root agent (sudo once) — Demo/Run buttons talk to this agent"
+echo "[gui] starting root agent (sudo once) — Start talks to this agent"
 echo "[gui] Ctrl-C stops the agent (Ryu keeps running)"
 
 cleanup() {
@@ -95,10 +87,6 @@ for _ in $(seq 1 50); do
   [[ -f /tmp/ndpa_gui_agent/heartbeat ]] && break
   sleep 0.1
 done
-
-if [[ "$AUTO_DEMO" -eq 1 ]]; then
-  echo "[gui] auto demo running — watch paths/events in the browser"
-fi
 
 wait "$AGENT_PID" || true
 AGENT_PID=
