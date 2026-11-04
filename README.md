@@ -30,7 +30,7 @@ A socket-based network diagnostic application that measures **delay (RTT)**, **p
 
 ## Features
 
-1. **Topology discovery**: switches, links, and host attachment points (default diamond, or the graph drawn in the dashboard).
+1. **Topology discovery**: switches, links, and host attachment points on the graph you draw.
 2. **Per-path UDP probing**: each discovered route pinned by destination port (`5001`, `5002`, `5004`, …; `5003` is live traffic).
 3. **Telemetry**: RTT (min/avg/max), jitter, and loss over an out-of-band TCP channel.
 4. **Classification**: healthy / degraded / failed with hold-time to avoid flapping.
@@ -42,74 +42,25 @@ A socket-based network diagnostic application that measures **delay (RTT)**, **p
 ## Architecture
 
 ```mermaid
+%%{init: {"theme": "neutral", "flowchart": {"padding": 16, "nodeSpacing": 36, "rankSpacing": 44}}}%%
 flowchart TB
-    D["Dashboard /ndpa/"]
-
-    subgraph CP["Control plane"]
-        R["Ryu: topology, analysis, REST"]
-        A["Root agent"]
-        R -->|"Start / faults"| A
-    end
-
-    subgraph DP["Data plane"]
-        SRC["C++ client"]
-        SW["OVS"]
-        DST["C++ reflector"]
-        SRC --- SW
-        SW --- DST
-        SRC -->|"UDP probes, one port per path"| DST
-    end
-
-    D -->|"GET / POST"| R
-    A -->|"Mininet + probes"| SW
-    SRC -->|"JSON :9100, mgmt veth"| R
-    R -->|"OpenFlow"| SW
-    SW -->|"port status"| R
+    D[Dashboard]
+    R[Ryu]
+    A[Root agent]
+    C[C++ client]
+    S[OVS]
+    F[C++ reflector]
+    D --> R
+    R --> A
+    A --> S
+    C --- S
+    S --- F
+    C -->|UDP| F
+    C -->|:9100| R
+    R -->|OpenFlow| S
 ```
 
-The dashboard default is the diamond below. **Start** saves `topology/topo.json` and brings up that graph. Probe src/dst come from the **Probe from / to** selectors, not a hardcoded host pair.
-
-### Default diamond paths
-
-| Route | Probe port | Role |
-|-------|------------|------|
-| s1 → s2 → s4 | udp/5001 | Candidate path |
-| s1 → s3 → s4 | udp/5002 | Candidate path |
-| extra discovered routes | udp/5004, 5005, … | Up to 8 probe paths |
-| follows the active route | udp/5003 | Live IPv4 / ARP between the probe pair |
-
-Probe ports are assigned shortest-first from a pool of eight UDP ports, skipping `5003` so a third route still gets a probe.
-
-### Control and REST
-
-| Piece | Role |
-|-------|------|
-| Root agent (`./demo/gui.sh`) | One sudo prompt. Dashboard Start and faults talk to this helper |
-| `GET /ndpa/health` | Agent, Mininet, hosts, paths, probe-report checklist |
-| `GET /ndpa/topology` | Switches, links, hosts |
-| `GET /ndpa/paths` | Path table, states, last reports, active path |
-| `GET /ndpa/events` | Recent decisions |
-| `POST /ndpa/run` | Save `topology/topo.json`; enqueue Mininet + C++ probes |
-| `POST /ndpa/fault` | Blackhole, Clear, link down, link up |
-
-### Design decisions
-
-* **Path pinning by UDP port**: forward match `udp_dst`, echo match `udp_src`, so every candidate can be measured at once.
-* **Soft vs hard faults**: **Blackhole** is `tc netem` 100% loss (link stays up; only probes see it). Inventory **del** on a live link takes the interface down (OpenFlow port-down). **+ Link** on the same pair brings it back.
-* **Client reports, controller decides**: analysis stays next to the topology.
-* **Control off the data path**: OpenFlow on loopback. Start adds a dedicated mgmt veth so JSON reports never share the probed links.
-* **No ARP flooding**: static ARP + proactive flows (the topology has a loop).
-
-### Tech stack
-
-| Layer | Pieces |
-|-------|--------|
-| Probes | C++ `telemetry/{client,server,stats,report}.cpp`, `protocol.h` |
-| Controller | Python / Ryu 4.34 (`controller/ndpa_controller.py`, `analysis.py`) |
-| Emulation | Mininet + Open vSwitch (`topology/diamond.py`, `topo.json`) |
-| GUI helper | `demo/gui.sh` + `demo/gui_agent.py` (root) + `demo/gui_demo.py` |
-| UI | Static `frontend/` served by Ryu WSGI |
-| CI | GitHub Actions (lint, C++ build/tests, Mininet integration, D1 demo) |
+Draw any graph in the dashboard (the starting draft is a diamond). **Start** brings that graph up in Mininet. Paths are discovered between the **Probe from / to** hosts. Each discovered route gets its own UDP probe port (`5001`, `5002`, `5004`, …, up to eight; `5003` is live traffic). **Blackhole** drops probes on a path while the link stays up. Inventory **del** takes a live link down.
 
 ---
 
@@ -120,7 +71,7 @@ protocol.h          shared 24-byte probe packet
 telemetry/          C++ client, reflector, stats, Makefile
 controller/         Ryu app + path classifier
 frontend/           live dashboard (HTML/CSS/JS)
-topology/           Mininet diamond topology
+topology/           Mininet graphs (GUI draft or diamond default)
 demo/               gui.sh (dashboard) and d1_demo.sh (headless)
 tests/              unit + integration
 eval/               benchmark hooks
@@ -195,18 +146,18 @@ sudo ./demo/d1_demo.sh --datapath user
 
 ## Screenshots
 
-From a live GUI run against Ryu at `/ndpa/` (real C++ probes + Mininet diamond). Path names are the switch route (`s1-s2-s4`), not letters.
+Live GUI at `/ndpa/` (C++ probes on the graph below, probe h4 → h2).
 
 | # | Capture | What it shows |
 |---|---------|----------------|
-| 1 | Baseline | Both paths healthy; live on s1→s2→s4 |
-| 2 | Soft blackhole | s1→s2→s4 failed (100% loss); live moved to s1→s3→s4 |
-| 3 | Hard failure | Alternate path failed on port-down; PORT / CLASSIFY / REROUTE events |
+| 1 | Baseline | Three paths healthy; live on s5→s1→s4 |
+| 2 | Soft blackhole | s5→s1→s4 failed (100% loss); live moved |
+| 3 | Hard failure | Link down on the live path; PORT / CLASSIFY / REROUTE |
 | 4 | Metrics | RTT min/avg/max, jitter, loss after recovery |
 
 ### Baseline
 
-![Baseline: both paths healthy](docs/screenshots/01-dashboard-baseline.png)
+![Baseline: three paths healthy](docs/screenshots/01-dashboard-baseline.png)
 
 ### Soft blackhole and reroute
 
@@ -219,12 +170,6 @@ From a live GUI run against Ryu at `/ndpa/` (real C++ probes + Mininet diamond).
 ### Paths table metrics
 
 ![Paths table with RTT / jitter / loss](docs/screenshots/04-paths-table-metrics.png)
-
----
-
-## Video demo
-
-A recorded walkthrough is not in the repo yet. Suggested script: start `./demo/gui.sh`, press **Start**, show healthy paths, **Blackhole** one path, show classification and reroute, inventory-**del** a live link, **+ Link** to restore, **Clear** netem, show recovery.
 
 ---
 
