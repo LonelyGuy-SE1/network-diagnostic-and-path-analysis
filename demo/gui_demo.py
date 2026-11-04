@@ -110,6 +110,7 @@ def main():
         # before LLDP, and a sticky port map from the last graph can hide a host.
         src.cmd('ping -c 12 -i 0.2 -W 1 %s >/dev/null 2>&1 &' % server_ip)
         dst.cmd('ping -c 12 -i 0.2 -W 1 %s >/dev/null 2>&1 &' % src.IP())
+
         def have_paths():
             try:
                 p = rest('paths')

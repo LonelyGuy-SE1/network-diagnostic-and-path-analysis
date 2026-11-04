@@ -271,7 +271,8 @@ def run(args):
         d.events()
         time.sleep(4)
         view, by, cs = d.snapshot('B link down')
-        d.check('B failed from port status', by[PATH_S3]['state'] == 'failed' and bool(by[PATH_S3]['ports_down']),
+        d.check('B failed from port status',
+                by[PATH_S3]['state'] == 'failed' and bool(by[PATH_S3]['ports_down']),
                 '%s (%s)' % (by[PATH_S3]['state'], by[PATH_S3]['reason']))
         d.check('live rerouted to s1-s2-s4', bool(moved), 'after %.1f s' % t_detect)
         live = cs[PORT_LIVE]['loss']

@@ -537,6 +537,17 @@
   function dropLiveLink(a, b) { return setLiveLink(a, b, 'link_down'); }
   function restoreLiveLink(a, b) { return setLiveLink(a, b, 'link_up'); }
 
+  const STALE_HELPER =
+    'Sudo helper is stale. In the ./demo/gui.sh terminal: Ctrl-C, then run ./demo/gui.sh again. Then press Start.';
+
+  function restartHint(msg) {
+    const s = String(msg || '');
+    if (/gui_run\.sh|gui_demo\.sh|unknown op|sudo helper is stale/i.test(s)) {
+      return STALE_HELPER;
+    }
+    return s;
+  }
+
   function applyHealth(h) {
     health = h;
     const list = $('health-list');
@@ -560,7 +571,7 @@
     // back to "Press Start" while Mininet is still coming up.
     if (Date.now() < holdStatusUntil && h.action === 'start') return;
     const el = $('status');
-    el.textContent = h.message || '';
+    el.textContent = restartHint(h.message || '');
     el.className = h.ok ? 'ok' : (h.action === 'wait' ? 'warn' : 'err');
   }
 
@@ -579,8 +590,8 @@
       if (!r.ok || body.ok === false) {
         holdStatusUntil = 0;
         $('status').className = 'err';
-        $('status').textContent = body.message || body.error
-          || 'Start failed. Run ./demo/gui.sh once so the agent can use sudo.';
+        $('status').textContent = restartHint(body.message || body.error
+          || 'Start failed. Run ./demo/gui.sh once so the agent can use sudo.');
         liveOn = false;
       } else {
         $('status').className = '';
@@ -620,7 +631,8 @@
       const j = await r.json().catch(() => ({}));
       if (!r.ok || j.ok === false) {
         $('status').className = 'err';
-        $('status').textContent = j.message || j.error || 'fault failed · start: ./demo/gui.sh --serve';
+        $('status').textContent = restartHint(j.message || j.error
+          || 'fault failed. Run ./demo/gui.sh');
         return;
       }
       $('status').className = '';

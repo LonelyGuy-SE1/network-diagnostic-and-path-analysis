@@ -38,7 +38,13 @@ AGENT_DIR = os.environ.get('NDPA_GUI_AGENT', '/tmp/ndpa_gui_agent')
 AGENT_HEART = os.path.join(AGENT_DIR, 'heartbeat')
 AGENT_REQ = os.path.join(AGENT_DIR, 'request.json')
 AGENT_REPLY = os.path.join(AGENT_DIR, 'reply.json')
+AGENT_VER_PATH = os.path.join(AGENT_DIR, 'version')
+AGENT_VERSION = '2'
 AGENT_HINT = 'stack not armed. run once: ./demo/gui.sh'
+AGENT_STALE = (
+    'Sudo helper is stale. In the ./demo/gui.sh terminal: Ctrl-C, '
+    'then run ./demo/gui.sh again. Then press Start.'
+)
 
 
 def _agent_ok():
@@ -48,6 +54,24 @@ def _agent_ok():
         return age < 5.0
     except (OSError, ValueError):
         return False
+
+
+def _agent_version():
+    try:
+        with open(AGENT_VER_PATH) as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
+def _agent_stale():
+    """Heartbeat is up, but this helper predates the current Start path."""
+    return _agent_ok() and _agent_version() != AGENT_VERSION
+
+
+def _stale_start_detail(detail):
+    s = (detail or '').lower()
+    return ('gui_run.sh' in s or 'gui_demo.sh' in s or 'unknown op' in s)
 
 
 def _agent_reply():
@@ -88,6 +112,7 @@ def _enqueue_gui(payload):
             pass
         time.sleep(0.2)
     return True, 'queued %s' % body.get('op')
+
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -392,7 +417,8 @@ class NdpaController(app_manager.RyuApp):
                       % (len(routes) - len(PROBE_PORTS)))
         self.active = 0
         self._install_live(self.paths[0])
-        self.note('ACTIVE', 'live traffic %s <-> %s on %s' % (self.src_ip, self.dst_ip, self.paths[0].label()))
+        self.note('ACTIVE', 'live traffic %s <-> %s on %s'
+                  % (self.src_ip, self.dst_ip, self.paths[0].label()))
 
     def _install_probe(self, p):
         fwd, rev = self._hops(p.route)
@@ -601,21 +627,33 @@ class NdpaController(app_manager.RyuApp):
                 and reply_age < 60):
             last_fail = reply.get('detail') or reply.get('error')
             starting = False
+        agent_current = agent and not _agent_stale()
+        if last_fail and _stale_start_detail(last_fail):
+            agent_current = False
         checks = [
             {'id': 'controller', 'ok': True, 'label': 'controller'},
-            {'id': 'agent', 'ok': agent, 'label': 'sudo helper (./demo/gui.sh)'},
+            {'id': 'agent', 'ok': agent_current,
+             'label': 'sudo helper (./demo/gui.sh)'},
             {'id': 'dataplane', 'ok': dataplane, 'label': 'Mininet dataplane'},
             {'id': 'hosts', 'ok': hosts_ok, 'label': 'probe hosts learned'},
             {'id': 'paths', 'ok': paths_ok, 'label': 'paths discovered'},
             {'id': 'probes', 'ok': fresh, 'label': 'probe reports'},
         ]
         if not agent:
-            action, message = 'gui.sh', 'Run ./demo/gui.sh in a terminal (asks for sudo once). Then press Start.'
+            action, message = (
+                'gui.sh',
+                'Run ./demo/gui.sh in a terminal (asks for sudo once). '
+                'Then press Start.',
+            )
+        elif not agent_current:
+            action, message = 'gui.sh', AGENT_STALE
         elif not dataplane:
             if starting:
                 action, message = 'wait', 'Start is running. Waiting for Mininet switches to connect.'
             elif last_fail:
-                action, message = 'start', 'Last Start failed: %s Press Start to retry.' % last_fail
+                action, message = 'start', (
+                    'Last Start failed: %s Press Start to retry.' % last_fail
+                )
             else:
                 action, message = 'start', 'Press Start to bring up Mininet and the C++ probes.'
         elif not hosts_ok:
@@ -635,7 +673,7 @@ class NdpaController(app_manager.RyuApp):
             'ok': action == 'ready',
             'action': action,
             'message': message,
-            'agent': agent,
+            'agent': agent_current,
             'dataplane': dataplane,
             'hosts': hosts_ok,
             'paths': paths_ok,
@@ -740,11 +778,13 @@ class NdpaRest(ControllerBase):
             return self._json({'ok': True, 'started': True,
                                'message': 'starting dataplane + probes'})
         self.app.starting_until = 0.0
+        hint = AGENT_STALE if (_agent_stale() or _stale_start_detail(detail)) else (
+            'topo saved · ' + detail)
         return Response(status=503, content_type='application/json',
                         body=json.dumps({
                             'ok': False, 'started': False,
                             'saved': True, 'error': detail,
-                            'message': 'topo saved · ' + detail,
+                            'message': hint,
                         }).encode())
 
     @route('ndpa', '/ndpa/fault', methods=['POST'])

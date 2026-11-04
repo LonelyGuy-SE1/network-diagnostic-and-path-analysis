@@ -18,6 +18,8 @@ REQ = os.path.join(AGENT_DIR, 'request.json')
 REPLY = os.path.join(AGENT_DIR, 'reply.json')
 HEART = os.path.join(AGENT_DIR, 'heartbeat')
 PID = os.path.join(AGENT_DIR, 'pid')
+VER = os.path.join(AGENT_DIR, 'version')
+AGENT_VERSION = '2'
 GUI_DEMO_PY = os.path.join(ROOT, 'demo', 'gui_demo.py')
 LOG_DIR = os.path.join(ROOT, 'demo-logs', 'gui')
 
@@ -44,6 +46,7 @@ def atomic_write(path, data):
 
 def beat():
     atomic_write(HEART, '%.3f\n' % time.time())
+    atomic_write(VER, AGENT_VERSION + '\n')
 
 
 def on_signal(signum, _frame):
