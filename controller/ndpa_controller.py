@@ -1,27 +1,6 @@
-"""NDPA Ryu app: topology discovery, per-path flows, telemetry ingest,
-path classification and rerouting.
+"""NDPA Ryu app: topology, per-path probes, classification, reroute.
 
     ryu-manager --observe-links controller/ndpa_controller.py
-
-What it does:
-  * Learns switches and links from LLDP (ryu.topology, --observe-links).
-  * Learns where the two probe hosts attach from their first packet
-    (packet-in on a port that is not an inter-switch link).
-  * Enumerates loop-free paths between them. Path i is pinned by UDP port
-    PROBE_PORTS[i]: requests match udp_dst, echoes match udp_src. These
-    probe flows never move, so each path keeps being measured.
-  * All other IPv4 and ARP traffic between the two hosts ("live traffic")
-    follows the active path. It starts on the first discovered route.
-  * The C++ client reports per-path stats as JSON lines over TCP (REPORT_PORT).
-  * analysis.py classifies each path healthy / degraded / failed from those
-    reports and from OpenFlow port status, and decides when to move live
-    traffic. Moving rewrites the live flows on the switches.
-  * REST view on the Ryu wsgi port (default 8080):
-      GET /ndpa/           live dashboard (frontend/)
-      GET /ndpa/topology   switches, links, hosts
-      GET /ndpa/paths      path table, states, last reports, active path
-      GET /ndpa/events     recent decisions with timestamps
-      POST /ndpa/run       save topology/topo.json; enqueue Mininet via ./demo/gui.sh agent
 """
 import collections
 import json
@@ -33,7 +12,6 @@ import time
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FRONTEND = os.path.join(_ROOT, 'frontend')
 TOPO_JSON = os.path.join(_ROOT, 'topology', 'topo.json')
-# Root agent started by ./demo/gui.sh — dashboard Start enqueues here.
 AGENT_DIR = os.environ.get('NDPA_GUI_AGENT', '/tmp/ndpa_gui_agent')
 AGENT_HEART = os.path.join(AGENT_DIR, 'heartbeat')
 AGENT_REQ = os.path.join(AGENT_DIR, 'request.json')
@@ -65,7 +43,6 @@ def _agent_version():
 
 
 def _agent_stale():
-    """Heartbeat is up, but this helper predates the current Start path."""
     return _agent_ok() and _agent_version() != AGENT_VERSION
 
 
@@ -83,7 +60,7 @@ def _agent_reply():
 
 
 def _enqueue_gui(payload):
-    """Ask the root gui agent (./demo/gui.sh) to do work. Returns (ok, message)."""
+    """Ask the root gui agent to do work. Returns (ok, message)."""
     if not isinstance(payload, dict) or not payload.get('op'):
         return False, 'bad request'
     if not _agent_ok():
@@ -129,9 +106,9 @@ from ryu.ofproto import ofproto_v1_3  # noqa: E402
 from ryu.topology import event as topo_event  # noqa: E402
 from webob import Response  # noqa: E402
 
-SRC_IP = os.environ.get('NDPA_SRC_IP', '10.0.0.1')    # probe client host
-DST_IP = os.environ.get('NDPA_DST_IP', '10.0.0.2')    # reflector host
-LIVE_PORT = int(os.environ.get('NDPA_LIVE_PORT', '5003'))
+SRC_IP = os.environ.get('NDPA_SRC_IP', '10.0.0.1')  # probe client
+DST_IP = os.environ.get('NDPA_DST_IP', '10.0.0.2')  # reflector
+LIVE_PORT = int(os.environ.get('NDPA_LIVE_PORT', '5003'))  # live traffic, not a probe
 REPORT_PORT = int(os.environ.get('NDPA_REPORT_PORT', '9100'))
 
 
@@ -139,7 +116,6 @@ def _probe_ports():
     raw = os.environ.get('NDPA_PROBE_PORTS')
     if raw:
         return [int(p) for p in raw.split(',') if p.strip()]
-    # Skip the live-traffic port so a third discovered route still gets a probe.
     out, p = [], 5001
     while len(out) < 8:
         if p != LIVE_PORT:
@@ -152,7 +128,7 @@ PROBE_PORTS = _probe_ports()
 PORT_STATS_PERIOD_S = 2.0
 
 PRIO_PROBE, PRIO_LIVE, PRIO_MISS = 200, 100, 0
-COOKIE_PROBE, COOKIE_LIVE = 0x10, 0x20          # probe cookie is 0x10 + path index
+COOKIE_PROBE, COOKIE_LIVE = 0x10, 0x20  # probe cookie is 0x10 + path index
 ETH_IP, ETH_ARP, PROTO_UDP = 0x0800, 0x0806, 17
 
 
@@ -170,25 +146,25 @@ class NdpaController(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.dps = {}                  # dpid -> datapath
-        self.sw_ports = {}             # dpid -> set(port_no)
-        self.links = {}                # (dpid, port) -> (dpid, port), as LLDP sees them now
-        self.adj = {}                  # dpid -> {nbr: out_port}; kept when a link drops
-        self.link_ports = set()        # every (dpid, port) ever seen on a link
+        self.dps = {}
+        self.sw_ports = {}
+        self.links = {}
+        self.adj = {}  # kept when a link drops so failed paths stay enumerable
+        self.link_ports = set()
         self.down_ports = set()
-        self.hosts = {}                # ip -> (dpid, port, mac)
-        self.paths = []                # analysis.PathState
-        self.active = None             # index into self.paths for live traffic
+        self.hosts = {}
+        self.paths = []
+        self.active = None
         self.src_ip = SRC_IP
         self.dst_ip = DST_IP
         self.last_reroute = 0.0
         self.reroutes = []
-        self.live = {}                 # non-probe ports the client reported, port -> sample
-        self.port_counters = {}        # (dpid, port) -> counters
+        self.live = {}
+        self.port_counters = {}
         self.reports = 0
         self.bad_reports = 0
         self.starting_until = 0.0
-        self.decisions = collections.deque(maxlen=200)   # not "events": RyuApp uses that name for its queue
+        self.decisions = collections.deque(maxlen=200)  # not "events": RyuApp owns that name
         kwargs['wsgi'].register(NdpaRest, {'ndpa': self})
         hub.spawn(self._serve_reports)
         hub.spawn(self._poll_port_stats)
@@ -197,8 +173,6 @@ class NdpaController(app_manager.RyuApp):
         ts = time.time() if ts is None else ts
         self.decisions.append({'t': now_str(ts), 'kind': kind, 'msg': msg})
         self.logger.info('%s %-8s %s', now_str(ts), kind, msg)
-
-    # ---- switches and flows -------------------------------------------------
 
     def reset_analysis(self, why='reset'):
         """Drop path table and learned topology so a new Mininet run starts clean."""
@@ -239,14 +213,12 @@ class NdpaController(app_manager.RyuApp):
             self.sw_ports.pop(dp.id, None)
             self._drop_switch_topo(dp.id)
             if not self.dps:
-                # Dataplane gone (Mininet stopped). Do not keep painting failed "live" paths.
                 self.reset_analysis('dataplane gone')
 
     @set_ev_cls(ofp_event.EventOFPSwitchFeatures, CONFIG_DISPATCHER)
     def _features(self, ev):
         dp = ev.msg.datapath
         ofp, parser = dp.ofproto, dp.ofproto_parser
-        # Table-miss to the controller: used to learn where hosts attach.
         self._flow(dp, PRIO_MISS, parser.OFPMatch(),
                    [parser.OFPActionOutput(ofp.OFPP_CONTROLLER, ofp.OFPCML_NO_BUFFER)], cookie=0)
 
@@ -268,8 +240,6 @@ class NdpaController(app_manager.RyuApp):
                                       out_port=ofp.OFPP_ANY, out_group=ofp.OFPG_ANY,
                                       match=parser.OFPMatch()))
 
-    # ---- topology discovery (LLDP via ryu.topology) --------------------------
-
     @set_ev_cls(topo_event.EventSwitchEnter)
     def _switch_enter(self, ev):
         s = ev.switch
@@ -287,21 +257,17 @@ class NdpaController(app_manager.RyuApp):
         self.link_ports.add(key)
         self.link_ports.add((dst.dpid, dst.port_no))
         self.note('TOPO', 'link %s:%d -> %s:%d' % (sw(src.dpid), src.port_no, sw(dst.dpid), dst.port_no))
-        # Hosts can be learned before LLDP finishes; retry once the graph has a route.
         self._maybe_build_paths()
 
     @set_ev_cls(topo_event.EventLinkDelete)
     def _link_delete(self, ev):
         src, dst = ev.link.src, ev.link.dst
         if self.links.pop((src.dpid, src.port_no), None):
-            # The path table keeps the link; the port state marks the path failed.
             self.note('TOPO', 'link lost %s:%d -> %s:%d' % (sw(src.dpid), src.port_no,
                                                             sw(dst.dpid), dst.port_no))
 
     def _is_edge(self, dpid, port):
         return bool(self.link_ports) and (dpid, port) not in self.link_ports
-
-    # ---- host discovery and path setup --------------------------------------
 
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def _packet_in(self, ev):
@@ -318,16 +284,13 @@ class NdpaController(app_manager.RyuApp):
         elif a is not None:
             src_ip, dst_ip = a.src_ip, a.dst_ip
         else:
-            return                                   # IPv6 noise etc.
+            return
         if not self._is_edge(dp.id, in_port):
-            return                                   # topology not known yet, or not from a host
+            return
         if src_ip not in self.hosts:
             self.hosts[src_ip] = (dp.id, in_port, eth.src)
             self.note('HOST', '%s (%s) at %s port %d' % (src_ip, eth.src, sw(dp.id), in_port))
             self._maybe_build_paths()
-        # Deliver this one packet: straight to the destination if known,
-        # otherwise to every host-facing port (never onto inter-switch links,
-        # so the loop in the diamond cannot cause a storm).
         if dst_ip in self.hosts:
             ddp, dport, _ = self.hosts[dst_ip]
             self._packet_out(ddp, dport, msg.data)
@@ -380,8 +343,6 @@ class NdpaController(app_manager.RyuApp):
         return True
 
     def _maybe_build_paths(self):
-        # Once discovered, paths stay for the lifetime of this controller —
-        # failed/broken still appear in /ndpa/paths until the process exits.
         if self.src_ip not in self.hosts or self.dst_ip not in self.hosts:
             return
         routes = [r for r in analysis.simple_paths(
@@ -402,7 +363,7 @@ class NdpaController(app_manager.RyuApp):
                 fwd, rev = self._hops(r)
                 p = analysis.PathState(i, r, PROBE_PORTS[i], ports=self._core_ports(fwd, rev))
                 self.paths.append(p)
-                self.note('PATHS', 'path %s probe udp/%d' % (p.label(), p.probe_port))
+                self.note('PATHS', 'path %s probe udp/%d' % (p.name, p.probe_port))
                 self._install_probe(p)
             return
         for i, r in enumerate(routes[:len(PROBE_PORTS)]):
@@ -410,7 +371,7 @@ class NdpaController(app_manager.RyuApp):
             self.paths.append(analysis.PathState(
                 i, r, PROBE_PORTS[i], ports=self._core_ports(fwd, rev)))
         for p in self.paths:
-            self.note('PATHS', 'path %s probe udp/%d' % (p.label(), p.probe_port))
+            self.note('PATHS', 'path %s probe udp/%d' % (p.name, p.probe_port))
             self._install_probe(p)
         if len(routes) > len(PROBE_PORTS):
             self.note('PATHS', '%d more route(s) without a probe port, ignored'
@@ -418,7 +379,7 @@ class NdpaController(app_manager.RyuApp):
         self.active = 0
         self._install_live(self.paths[0])
         self.note('ACTIVE', 'live traffic %s <-> %s on %s'
-                  % (self.src_ip, self.dst_ip, self.paths[0].label()))
+                  % (self.src_ip, self.dst_ip, self.paths[0].name))
 
     def _install_probe(self, p):
         fwd, rev = self._hops(p.route)
@@ -433,8 +394,7 @@ class NdpaController(app_manager.RyuApp):
             self._out(dpid, PRIO_PROBE, m_rev, port, COOKIE_PROBE + p.idx)
 
     def _install_live(self, p):
-        """Live IPv4 + ARP between the hosts along p. Downstream switches first,
-        so the ingress switch only turns traffic over once the rest is ready."""
+        """Live IPv4 + ARP along p. Downstream switches first so ingress is last."""
         fwd, rev = self._hops(p.route)
         parser = self.dps[p.route[0]].ofproto_parser
         for hops, s, d in ((fwd, self.src_ip, self.dst_ip), (rev, self.dst_ip, self.src_ip)):
@@ -442,8 +402,6 @@ class NdpaController(app_manager.RyuApp):
                 self._out(dpid, PRIO_LIVE, parser.OFPMatch(eth_type=ETH_IP, ipv4_src=s, ipv4_dst=d),
                           port, COOKIE_LIVE)
                 self._out(dpid, PRIO_LIVE, parser.OFPMatch(eth_type=ETH_ARP, arp_tpa=d), port, COOKIE_LIVE)
-
-    # ---- telemetry ingest (JSON lines over TCP) -----------------------------
 
     def _serve_reports(self):
         server = hub.StreamServer(('0.0.0.0', REPORT_PORT), self._report_conn)
@@ -497,11 +455,9 @@ class NdpaController(app_manager.RyuApp):
             old = p.update(s['loss'], s['rtt_avg'], now, sample=s)
             parts.append('%s=%s loss %.1f%% rtt %.3f ms' % (p.name, p.state, s['loss'], s['rtt_avg']))
             if old is not None:
-                self.note('CLASSIFY', 'path %s %s -> %s: %s' % (p.label(), old, p.state, p.reason), now)
+                self.note('CLASSIFY', 'path %s %s -> %s: %s' % (p.name, old, p.state, p.reason), now)
         self.logger.info('%s REPORT   %s', now_str(now), ' | '.join(parts))
         self._evaluate(now)
-
-    # ---- failures: port status and port stats --------------------------------
 
     @set_ev_cls(ofp_event.EventOFPPortStatus, MAIN_DISPATCHER)
     def _port_status(self, ev):
@@ -521,7 +477,7 @@ class NdpaController(app_manager.RyuApp):
         for p in self.paths:
             old = p.set_port(key, down, now)
             if old is not None:
-                self.note('CLASSIFY', 'path %s %s -> %s: %s' % (p.label(), old, p.state, p.reason), now)
+                self.note('CLASSIFY', 'path %s %s -> %s: %s' % (p.name, old, p.state, p.reason), now)
         self._evaluate(now)
 
     def _poll_port_stats(self):
@@ -538,8 +494,6 @@ class NdpaController(app_manager.RyuApp):
                 'rx_dropped': st.rx_dropped, 'tx_dropped': st.tx_dropped,
                 'rx_errors': st.rx_errors, 'tx_errors': st.tx_errors}
 
-    # ---- decisions ----------------------------------------------------------
-
     def _evaluate(self, now):
         if self.active is None:
             return
@@ -550,7 +504,7 @@ class NdpaController(app_manager.RyuApp):
     def _reroute(self, new, why, now):
         old_p, new_p = self.paths[self.active], self.paths[new]
         detect_ms = (now - old_p.first_bad_ts) * 1000 if old_p.first_bad_ts else 0.0
-        self.note('REROUTE', 'live traffic %s -> %s because %s' % (old_p.label(), new_p.label(), why), now)
+        self.note('REROUTE', 'live traffic %s -> %s because %s' % (old_p.name, new_p.name, why), now)
         self._install_live(new_p)
         for dpid in set(old_p.route) - set(new_p.route):
             self._delete_cookie(dpid, COOKIE_LIVE)
@@ -561,9 +515,7 @@ class NdpaController(app_manager.RyuApp):
                'flowmods_ms': round((done - now) * 1000, 1)}
         self.reroutes.append(rec)
         self.note('REROUTE', 'done: live traffic on %s, %.0f ms after the first bad sign, '
-                  'flow-mods sent in %.1f ms' % (new_p.label(), detect_ms, (done - now) * 1000), done)
-
-    # ---- REST views --------------------------------------------------------
+                  'flow-mods sent in %.1f ms' % (new_p.name, detect_ms, (done - now) * 1000), done)
 
     def topology_view(self):
         link_intfs = {}
@@ -707,7 +659,6 @@ class NdpaRest(ControllerBase):
     def _dashboard(self):
         return self._file(os.path.join(FRONTEND, 'index.html'))
 
-    # Ryu's Routes mapper treats /ndpa and /ndpa/ as different; bind both.
     @route('ndpa', '/ndpa', methods=['GET'])
     def dashboard(self, req, **kwargs):
         return self._dashboard()
@@ -760,7 +711,6 @@ class NdpaRest(ControllerBase):
 
     @route('ndpa', '/ndpa/run', methods=['POST'])
     def run_topo(self, req, **kwargs):
-        """Apply the editor graph: save topo.json, reset analysis, start Mininet + probes."""
         try:
             data = json.loads(req.body.decode() if req.body else '{}')
             with open(TOPO_JSON, 'w') as f:
@@ -789,11 +739,6 @@ class NdpaRest(ControllerBase):
 
     @route('ndpa', '/ndpa/fault', methods=['POST'])
     def fault(self, req, **kwargs):
-        """Soft/hard fault injection via the root agent (tc netem / link down).
-
-        Body: {action: degrade|blackhole|clear|link_down|link_up,
-               path?: name, intf?: "s2-eth2", loss_pct?: 15}
-        """
         try:
             data = json.loads(req.body.decode() if req.body else '{}')
         except (ValueError, UnicodeDecodeError) as e:

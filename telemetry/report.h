@@ -31,8 +31,6 @@ public:
     Reporter(const Reporter&) = delete;
     Reporter& operator=(const Reporter&) = delete;
 
-    // Send one line if connected, otherwise move the connection along and drop
-    // the line. Never blocks.
     void send_line(const std::string& line, uint64_t now_ns);
 
 private:

@@ -77,7 +77,6 @@ int main(int argc, char** argv) {
                 ++dropped;
                 continue;
             }
-            // Echo the bytes exactly as received.
             if (sendto(p.fd, buf, static_cast<size_t>(len), 0, reinterpret_cast<sockaddr*>(&from), fromlen) < 0)
                 ++dropped;
             else

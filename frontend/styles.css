@@ -196,10 +196,8 @@ button:disabled {
 .edge.healthy { stroke: var(--healthy); }
 .edge.degraded { stroke: var(--degraded); }
 .edge.failed, .edge.down { stroke: var(--failed); }
-/* Live = thicker. Health colour stays (failed live is thick red, not blue). */
 .edge.active { stroke-width: 8; }
 .edge.down { stroke-dasharray: 8 6; }
-.edge.draft { stroke: #666; stroke-dasharray: 5 5; }
 
 .node-sw, .node-host {
   stroke: var(--line);
@@ -214,12 +212,6 @@ button:disabled {
   text-anchor: middle;
   dominant-baseline: central;
   pointer-events: none;
-}
-
-.path-tag {
-  fill: var(--ink);
-  font: 700 12px var(--font);
-  text-anchor: middle;
 }
 
 .legend {

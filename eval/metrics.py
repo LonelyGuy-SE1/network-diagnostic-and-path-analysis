@@ -6,14 +6,11 @@ import csv
 import re
 import statistics
 
-# One per-path line of the C++ client, e.g.
-# path=0 port=5001 sent=61 recv=60 loss=0.0% rtt_ms min=0.071 avg=0.106 max=0.298 jitter=0.054 ...
 CLIENT_LINE = re.compile(r'path=(\d+) port=(\d+) sent=(\d+) recv=(\d+) loss=([\d.]+)% '
                          r'rtt_ms min=([\d.]+) avg=([\d.]+) max=([\d.]+) jitter=([\d.]+)')
 
 PHASES = ('before', 'fault', 'after')
 
-# Column order of runs.csv. See docs/benchmark.md for what each one means.
 FIELDS = (
     ['run', 'mode', 'scenario', 'rep', 'fault', 'hold_s', 't_fault', 't_repair',
      'detected', 'detect_ms', 'reroute_ms', 'ctrl_first_bad_to_reroute_ms', 'recover_ms',
@@ -25,7 +22,6 @@ FIELDS = (
     + ['%s_%s_%s' % (path, what, p) for p in PHASES for path in 'AB' for what in ('rtt', 'loss')]
     + ['error'])
 
-# Shown by format_comparison(): column, title, unit.
 HEADLINE = [
     ('outage_ms', 'longest live outage', 'ms'),
     ('live_loss_pct', 'live packets lost', '%'),
@@ -71,7 +67,7 @@ def live_metrics(recs, sent, rate, t_fault, t_repair):
     """
     got = {}
     for seq, sent_at, got_at, n in recs:
-        got.setdefault(seq, (sent_at, got_at, n))   # a duplicate does not count twice
+        got.setdefault(seq, (sent_at, got_at, n))
     out = {'live_sent': sent, 'live_recv': len(got)}
     keys = (['live_loss_pct', 'live_lost', 'outage_ms', 'gap_at_repair_ms']
             + ['live_lost_%s' % p for p in PHASES]
@@ -80,7 +76,6 @@ def live_metrics(recs, sent, rate, t_fault, t_repair):
         out.update({k: None for k in keys})
         return out
 
-    # Send time of packet q is t0 + q / rate; t0 is estimated from what arrived.
     t0 = _median([s - q / rate for q, (s, _, _) in got.items()])
     t_end = t0 + sent / rate
     window = {'before': (t0, t_fault), 'fault': (t_fault, t_repair), 'after': (t_repair, t_end)}
@@ -115,8 +110,6 @@ def live_metrics(recs, sent, rate, t_fault, t_repair):
         out['goodput_%s_kbps' % p] = nbytes[p] * 8 / 1000.0 / span
         out['owd_%s_ms' % p] = _median(owd[p])
 
-    # Gap between the last packet that arrived before the repair and the first after it:
-    # about one packet interval if service was flowing, the whole outage if it was not.
     times = sorted(r for _, r, _ in got.values())
     before = [t for t in times if t <= t_repair]
     after = [t for t in times if t > t_repair]

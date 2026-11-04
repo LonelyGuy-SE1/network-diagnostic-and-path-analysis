@@ -3,21 +3,18 @@
   const NS = 'http://www.w3.org/2000/svg';
   const $ = (id) => document.getElementById(id);
   const W = 720, H = 480;
-  // Must be declared before defaultTopo() runs (TDZ otherwise blanks the SVG).
   const LAYOUT_VER = 4;
 
   let topo = defaultTopo();
   let paths = null;
-  let liveOn = false;   // path colours only while dataplane is up
+  let liveOn = false;
   let liveTopo = null;
   let health = null;
   let holdStatusUntil = 0;
   let drag = null;
-  const downIntfs = {};  // "s1-s2" -> ["s1-eth2", "s2-eth1"] remembered at del time
+  const downIntfs = {};
 
   function defaultTopo() {
-    // Fixed diamond coordinates so the first paint is never a BFS guess.
-    // Vertical order: h1, then s1 well below it, then s2/s3, then s4, then h2.
     return {
       layoutVer: LAYOUT_VER,
       switches: ['s1', 's2', 's3', 's4'],
@@ -99,12 +96,10 @@
   }
 
   function inView(p) {
-    // Keep nodes fully inside the SVG (host radius is 20).
     return p && Number.isFinite(p.x) && Number.isFinite(p.y)
       && p.x >= 30 && p.x <= W - 30 && p.y >= 30 && p.y <= H - 30;
   }
 
-  // Fill coordinates for any node that does not already have a saved position.
   function layoutMissing(g) {
     topo.pos = topo.pos || {};
     const need = Object.keys(g.nodes).filter((id) => !inView(topo.pos[id]));
@@ -146,8 +141,8 @@
   }
 
   function edgeClass(a, b, meta) {
-    if (meta.down) return { cls: 'edge down failed', tag: '' };
-    if (!liveOn) return { cls: 'edge', tag: '' };
+    if (meta.down) return 'edge down failed';
+    if (!liveOn) return 'edge';
 
     let best = null, active = false;
     (paths && paths.paths || []).forEach((p) => {
@@ -162,9 +157,9 @@
     });
 
     if (best) {
-      return { cls: ['edge', best].concat(active ? ['active'] : []).join(' '), tag: '' };
+      return ['edge', best].concat(active ? ['active'] : []).join(' ');
     }
-    return { cls: 'edge idle', tag: '' };
+    return 'edge idle';
   }
 
   function el(name, attrs, text) {
@@ -196,18 +191,11 @@
       const e = g.edges[k];
       const a = g.nodes[e.a], b = g.nodes[e.b];
       if (!a || !b) return;
-      const st = edgeClass(e.a, e.b, e);
       svg.appendChild(el('line', {
-        x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: st.cls || 'edge'
+        x1: a.x, y1: a.y, x2: b.x, y2: b.y, class: edgeClass(e.a, e.b, e)
       }));
-      if (st.tag) {
-        svg.appendChild(el('text', {
-          x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 - 12, class: 'path-tag'
-        }, st.tag));
-      }
     });
 
-    // Switches first, hosts on top so they are never hidden under a switch.
     const order = Object.keys(g.nodes).sort((a, b) => {
       const ka = g.nodes[a].kind === 'host' ? 1 : 0;
       const kb = g.nodes[b].kind === 'host' ? 1 : 0;
@@ -238,8 +226,6 @@
     const r = p.last_report || {};
     const hardDown = (p.ports_down && p.ports_down.length) || /port .+ down/.test(p.reason || '');
     const blackholed = Number(r.loss) >= 99.9;
-    // No RTT when nothing in the window answered — avoids min/max drifting
-    // from leftover echoes while the path is failed / blackholed.
     if (hardDown || blackholed || r.rtt_avg == null) {
       const loss = hardDown ? '100.0' : fmt(r.loss, 1);
       return '<td>-</td><td>-</td><td>-</td><td>-</td><td>' + loss + '%</td>';
@@ -283,7 +269,6 @@
       if ($('path-meta')) $('path-meta').textContent = '';
       return;
     }
-    // Keep every discovered path row — failed/degraded stay visible for analysis.
     $('paths').innerHTML = rows.map((p) => {
       const live = !!(p.active || (view && p.name === view.active));
       const pill = live
@@ -374,13 +359,11 @@
   }
 
   function refresh() {
-    // Keep live colours while editing; Run re-pushes topo and refreshes paths.
     renderInventory();
     if (!liveOn) renderPaths(null);
     draw();
   }
 
-  // ---- drag ----
   $('svg').addEventListener('pointerdown', (ev) => {
     const g = ev.target.closest('g.draggable');
     if (!g) return;
@@ -410,7 +393,6 @@
   $('svg').addEventListener('pointerup', () => { drag = null; });
   $('svg').addEventListener('pointercancel', () => { drag = null; });
 
-  // ---- edit ----
   $('add-sw').onclick = () => {
     const s = nextName('s', topo.switches);
     topo.switches.push(s);
@@ -422,7 +404,6 @@
 
   $('add-host').onclick = () => {
     const name = nextName('h', topo.hosts.map((h) => h.name));
-    // Unlinked until the user adds a host-switch link.
     topo.hosts.push({ name, ip: nextIp(), switch: null });
     const n = topo.hosts.length;
     topo.pos[name] = { x: W - 70, y: 80 + (n - 1) * 70 };
@@ -566,9 +547,6 @@
 
   function showHealthMessage(h) {
     if (!h) return;
-    // Keep the "starting dataplane" line only while health still wants Start.
-    // wait/ready (or a real failure) must replace it so we do not bounce
-    // back to "Press Start" while Mininet is still coming up.
     if (Date.now() < holdStatusUntil && h.action === 'start') return;
     const el = $('status');
     el.textContent = restartHint(h.message || '');
@@ -713,7 +691,6 @@
     if (saved) {
       const parsed = JSON.parse(saved);
       const base = defaultTopo();
-      // Old saves used a cramped layout; ignore their positions after a layout bump.
       const keepPos = parsed.layoutVer === LAYOUT_VER ? (parsed.pos || {}) : {};
       topo = {
         layoutVer: LAYOUT_VER,
@@ -731,7 +708,6 @@
   } catch (e) {}
 
   refresh();
-  // Always poll the real controller; colour edges only when it answers.
   tick();
   setInterval(tick, 1000);
 })();

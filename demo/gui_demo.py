@@ -1,11 +1,5 @@
 #!/usr/bin/env python3
-"""Bring up Mininet + C++ probes for the dashboard Start button.
-
-Uses an already-running Ryu. Does not touch demo/d1_demo.sh.
-
-  ./demo/gui.sh
-  # browser: http://127.0.0.1:8080/ndpa/
-"""
+"""Bring up Mininet + C++ probes for the dashboard Start button."""
 import argparse
 import json
 import os
@@ -106,8 +100,6 @@ def main():
             src.name, src.IP(), dst.name, dst.IP()))
 
         status('waiting for topology + path table')
-        # Background pings from BOTH probe hosts. A one-shot ping can finish
-        # before LLDP, and a sticky port map from the last graph can hide a host.
         src.cmd('ping -c 12 -i 0.2 -W 1 %s >/dev/null 2>&1 &' % server_ip)
         dst.cmd('ping -c 12 -i 0.2 -W 1 %s >/dev/null 2>&1 &' % src.IP())
 
@@ -158,7 +150,6 @@ def main():
     finally:
         try:
             if net:
-                # Narrow patterns — never pkill ryu / ndpa_controller.
                 for h in net.hosts:
                     h.cmd('pkill -x client || true')
                     h.cmd('pkill -x server || true')

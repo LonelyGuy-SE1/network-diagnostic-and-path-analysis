@@ -241,8 +241,6 @@ def main():
         except OSError:
             pass
     os.makedirs(AGENT_DIR, exist_ok=True)
-    # World-readable heartbeat so the non-root Ryu process can see us;
-    # request file is created by the controller (same tmp dir).
     os.chmod(AGENT_DIR, 0o1777)
     atomic_write(PID, '%d\n' % os.getpid())
     beat()

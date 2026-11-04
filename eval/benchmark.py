@@ -122,7 +122,7 @@ def start_run(mode, a, rundir):
             if not wait_for(lambda: (lambda t: len(t['switches']) == 4 and len(t['links']) == 8)(
                     rest('topology')), 30):
                 raise RuntimeError('topology discovery did not finish')
-            h1.cmd('ping -c 2 -W 1', SERVER_IP)               # lets the controller learn the hosts
+            h1.cmd('ping -c 2 -W 1', SERVER_IP)
             if not wait_for(lambda: len(rest('paths')['paths']) == 2, 15):
                 raise RuntimeError('controller built no path table')
         else:
@@ -148,7 +148,7 @@ def stop_run(h):
         except subprocess.TimeoutExpired:
             p.kill()
     if h['ryu']:
-        h['ryu'].terminate()            # first, so teardown port events stay out of its log
+        h['ryu'].terminate()
         try:
             h['ryu'].wait(5)
         except subprocess.TimeoutExpired:
@@ -209,7 +209,6 @@ def run_once(mode, scenario, rep, a, rundir):
         time.sleep(a.warmup)
         samples['before'] = metrics.latest_by_port(read(client_log))
 
-        # ---- fault ----------------------------------------------------------
         t_fault = time.time()
         faults.inject(net, fault)
         detect_t = reroute_t = None
@@ -226,7 +225,6 @@ def run_once(mode, scenario, rep, a, rundir):
             time.sleep(0.02)
         samples['fault'] = metrics.latest_by_port(read(client_log))
 
-        # ---- repair ---------------------------------------------------------
         t_repair = time.time()
         faults.clear(net, fault)
         recover_t = None
@@ -239,7 +237,6 @@ def run_once(mode, scenario, rep, a, rundir):
             time.sleep(0.05)
         samples['after'] = metrics.latest_by_port(read(client_log))
 
-        # ---- results --------------------------------------------------------
         row['t_fault'], row['t_repair'] = round(t_fault, 3), round(t_repair, 3)
         if dynamic:
             final = poll_paths()
@@ -323,7 +320,7 @@ def main():
     try:
         for rep in range(1, a.reps + 1):
             for scenario in scenarios:
-                for mode in modes:          # modes alternate so slow drift hits both equally
+                for mode in modes:
                     n += 1
                     name = '%s-%s-%d' % (mode, scenario, rep)
                     print('[%d/%d] %s ...' % (n, total_runs, name), flush=True)
@@ -333,7 +330,7 @@ def main():
                             metrics.fmt(row.get('outage_ms')), metrics.fmt(row.get('live_loss_pct'))))
                     except KeyboardInterrupt:
                         raise
-                    except Exception as e:      # keep going: one bad run should not lose the rest
+                    except Exception as e:
                         print('        FAILED: %s' % e)
                         row = {'run': name, 'mode': mode, 'scenario': scenario, 'rep': rep,
                                'error': str(e)[:200]}

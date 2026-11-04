@@ -1,30 +1,20 @@
-"""Path analysis for the NDPA controller.
-
-No Ryu imports here, so the logic can be unit tested with plain python3.
-The Ryu app in ndpa_controller.py feeds it reports and port events.
-"""
+"""Path analysis for the NDPA controller. No Ryu imports (unit-testable)."""
 
 HEALTHY, DEGRADED, FAILED, UNKNOWN = 'healthy', 'degraded', 'failed', 'unknown'
 RANK = {HEALTHY: 0, DEGRADED: 1, FAILED: 2, UNKNOWN: 3}
 
-# Baseline RTT on the Mininet diamond is well under 1 ms, so 50 ms
-# means something is wrong.
 DEGRADED_LOSS_PCT = 5.0
 FAILED_LOSS_PCT = 50.0
-DEGRADED_RTT_MS = 50.0
+DEGRADED_RTT_MS = 50.0  # Mininet baseline is << 1 ms; 50 ms is a real stall
 
-# Hysteresis: a path needs this many consecutive reports agreeing on a new
-# state before the state changes. Going bad is faster than coming back.
+# Consecutive agreeing reports before a state flip (worse is faster than recover).
 WORSE_REPORTS = 2
 BETTER_REPORTS = 3
-
-# Minimum gap between two reroutes, unless the active path has failed.
-HOLD_TIME_S = 5.0
+HOLD_TIME_S = 5.0  # min gap between reroutes unless the active path has failed
 
 
 def simple_paths(adj, src, dst, max_hops=8):
-    """All loop-free switch paths src -> dst. adj is {dpid: {nbr: out_port}}.
-    Shortest first, ties broken by dpid order, so the order is stable."""
+    """Loop-free switch paths src -> dst. adj is {dpid: {nbr: out_port}}."""
     out = []
 
     def walk(node, seen):
@@ -64,23 +54,20 @@ class PathState:
 
     def __init__(self, idx, route, probe_port, ports=()):
         self.idx = idx
-        self.route = list(route)              # dpids, e.g. [1, 2, 4]
-        self.name = route_name(self.route)    # e.g. s1-s2-s4
+        self.route = list(route)
+        self.name = route_name(self.route)
         self.probe_port = probe_port
         # Inter-switch ports only — host attachment ports are shared by every
         # path and must not flip the whole table to failed.
         self.ports = set(ports)
         self.state = UNKNOWN
         self.reason = 'no reports yet'
-        self.last = None                      # last sample dict
+        self.last = None
         self.last_ts = 0.0
-        self.down = set()                     # ports on this path that are down
-        self.first_bad_ts = None              # first bad report of the current episode
+        self.down = set()
+        self.first_bad_ts = None
         self._pending = None
         self._count = 0
-
-    def label(self):
-        return self.name
 
     def _commit(self, state, reason):
         old = self.state
@@ -93,11 +80,7 @@ class PathState:
     def update(self, loss_pct, rtt_avg_ms, now, sample=None):
         """Feed one report. Returns the old state if the state changed, else None."""
         if self.down:
-            # Port-down owns classification. Do not refresh last_report with
-            # sliding-window leftovers (stale low loss / shifting min/max RTT).
             return None
-        # Full loss → no successful RTTs in the window; do not keep shifting
-        # min/max from leftover echoes (looks like RTT "moving the wrong way").
         if sample is not None and float(sample.get('loss', loss_pct) or 0) >= 100.0:
             sample = dict(sample)
             sample['rtt_min'] = sample['rtt_avg'] = sample['rtt_max'] = None
@@ -132,8 +115,6 @@ class PathState:
             self.down.add(key)
             if self.first_bad_ts is None:
                 self.first_bad_ts = now
-            # Drop stale window metrics so the table does not keep showing
-            # healthy loss/RTT while the path is hard-down.
             self.last = {
                 'loss': 100.0, 'rtt_min': None, 'rtt_avg': None, 'rtt_max': None,
                 'jitter': None, 'port': self.probe_port,
@@ -145,15 +126,13 @@ class PathState:
             return None
         self.down.discard(key)
         if not self.down:
-            # Stay failed until the probes confirm the path works again.
             self.reason = 'port s%d:%d up, waiting for probes' % key
         return None
 
 
 def choose_active(paths, active_idx, now, last_reroute_ts):
-    """Decide whether live traffic should move. Returns (new_idx, reason) or
-    (None, reason). Non-preemptive: we only move when the active path is bad,
-    never just because the old path came back, which avoids flapping."""
+    """(new_idx, reason) or (None, reason). Move only when the active path is
+    bad, never because a recovered path looks better (avoids flapping)."""
     active = paths[active_idx]
     if active.state not in (DEGRADED, FAILED):
         return None, 'active path %s' % active.state

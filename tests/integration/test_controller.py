@@ -93,14 +93,12 @@ class Demo:
             evs = rest('events')
         except OSError:
             return
-        # The deque keeps the last 200; match up by position from the end.
         new = evs[self.seen_events:] if self.seen_events <= len(evs) else evs
         for e in new:
             print('    ryu %s %-8s %s' % (e['t'], e['kind'], e['msg']))
         self.seen_events = len(evs)
 
     def client_text(self):
-        # The client starts in the background, so its log may not exist yet.
         try:
             with open(self.log_path('client.log')) as f:
                 return f.read()
@@ -242,7 +240,7 @@ def run(args):
         moved = wait_for(lambda: rest('paths')['active'] == PATH_S3, 20)
         t_detect = time.time() - t0
         d.events()
-        time.sleep(4)            # let the client's 2 s loss window refill
+        time.sleep(4)
         view, by, cs = d.snapshot('A blackholed')
         a = by[PATH_S2]
         d.check('A classified failed by probes', a['state'] == 'failed' and not a['ports_down'],
@@ -298,7 +296,7 @@ def run(args):
         h2.cmd('pkill -f "%s/server"' % BIN)
         return d.failures
     finally:
-        # Stop the controller first so teardown port events do not clutter its log.
+        # Stop Ryu first so teardown port events stay out of its log.
         ryu.terminate()
         try:
             ryu.wait(5)

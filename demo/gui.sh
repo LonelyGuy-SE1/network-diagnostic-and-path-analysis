@@ -41,8 +41,6 @@ RYU_STARTED=0
 if ! ryu_up; then
   echo "[gui] starting Ryu → demo-logs/gui/ryu.log"
   mkdir -p demo-logs/gui
-  # Prefer the invoking user even if this script was run under sudo.
-  RUN_AS="${SUDO_USER:-$USER}"
   if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" ]]; then
     sudo -u "$SUDO_USER" -H -- "$RYU_BIN" --observe-links controller/ndpa_controller.py \
       >>demo-logs/gui/ryu.log 2>&1 &
@@ -76,12 +74,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Keep sudo ticket warm for the agent process.
 sudo -v
 sudo python3 "$ROOT/demo/gui_agent.py" "${AGENT_ARGS[@]}" &
 AGENT_PID=$!
 
-# Wait for heartbeat
 for _ in $(seq 1 50); do
   [[ -f /tmp/ndpa_gui_agent/heartbeat ]] && break
   sleep 0.1

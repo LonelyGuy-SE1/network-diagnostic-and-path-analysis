@@ -15,7 +15,7 @@ import socket
 import struct
 import time
 
-HDR = struct.Struct('!Id')       # sequence number, send time (seconds since the epoch)
+HDR = struct.Struct('!Id')
 
 
 def send(a):
@@ -32,7 +32,7 @@ def send(a):
         try:
             sock.sendto(HDR.pack(seq, time.time()) + pad, (a.dst, a.port))
         except OSError:
-            errors += 1          # e.g. ENOBUFS; the packet counts as sent and lost
+            errors += 1
     print('sent=%d errors=%d' % (total, errors), flush=True)
 
 
