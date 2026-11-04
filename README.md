@@ -150,10 +150,10 @@ Live GUI at `/ndpa/` (C++ probes on the graph below, probe h4 → h2).
 
 | # | Capture | What it shows |
 |---|---------|----------------|
-| 1 | Baseline | Three paths healthy; live on s5→s2→s4 |
-| 2 | Soft blackhole | s5→s2→s4 failed (100% loss); live moved to s5→s1→s3→s4 |
-| 3 | Hard failure | Inventory **del** on s3–s4; PORT / CLASSIFY / REROUTE onto s5→s1→s4 |
-| 4 | Recovery | All three healthy again; RTT min/avg/max, jitter, loss |
+| 1 | Baseline | Three paths healthy; live on s5→s1→s4 |
+| 2 | Soft blackhole | s5→s1→s4 failed (100% loss); live moved |
+| 3 | Hard failure | Link down on the live path; PORT / CLASSIFY / REROUTE |
+| 4 | Metrics | RTT min/avg/max, jitter, loss after recovery |
 
 ### Baseline
 
