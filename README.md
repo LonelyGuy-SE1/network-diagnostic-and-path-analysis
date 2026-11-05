@@ -42,25 +42,28 @@ A socket-based network diagnostic application that measures **delay (RTT)**, **p
 ## Architecture
 
 ```mermaid
-%%{init: {"theme": "neutral", "flowchart": {"padding": 16, "nodeSpacing": 36, "rankSpacing": 44}}}%%
+%%{init: {"flowchart": {"htmlLabels": true, "padding": 16, "nodeSpacing": 28, "rankSpacing": 44, "curve": "linear"}}}%%
 flowchart TB
-    D[Dashboard]
-    R[Ryu]
-    A[Root agent]
-    C[C++ client]
-    S[OVS]
-    F[C++ reflector]
-    D --> R
-    R --> A
-    A --> S
-    C --- S
-    S --- F
-    C -->|UDP| F
-    C -->|:9100| R
-    R -->|OpenFlow| S
+    D([Dashboard])
+    REST[REST /ndpa]
+    RYU[Ryu: LLDP, classify RTT/loss, reroute]
+    ST[Start / faults]
+    AG[Root agent]
+    OF[OpenFlow 1.3]
+    MN{{Mininet + OVS}}
+    UDP[UDP probes per path]
+    CL[[C++ client + JSON :9100]]
+    ECHO[echo]
+    RF[[C++ reflector]]
+
+    D --> REST --> RYU
+    RYU --> ST --> AG --> MN
+    RYU --> OF --> MN
+    CL --> UDP --> MN
+    MN --> ECHO --> RF
 ```
 
-Draw any graph in the dashboard (the starting draft is a diamond). **Start** brings that graph up in Mininet. Paths are discovered between the **Probe from / to** hosts. Each discovered route gets its own UDP probe port (`5001`, `5002`, `5004`, …, up to eight; `5003` is live traffic). **Blackhole** drops probes on a path while the link stays up. Inventory **del** takes a live link down.
+Draw any graph in the dashboard (the starting draft is a diamond). **Start** asks the root agent to bring that graph up in Mininet. Ryu discovers switch routes between **Probe from / to**, pins each one with its own UDP port (`5001`, `5002`, `5004`, …; `5003` is live traffic), and classifies reports from the C++ client. **Blackhole** drops probes on a path while the link stays up. Inventory **del** takes a live link down. JSON reports use a management veth, not the probed links.
 
 ---
 
