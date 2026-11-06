@@ -44,15 +44,16 @@ A socket-based network diagnostic application that measures **delay (RTT)**, **p
 ```mermaid
 %%{init: {"flowchart": {"htmlLabels": true, "padding": 16, "nodeSpacing": 28, "rankSpacing": 44, "curve": "linear"}}}%%
 flowchart TB
-    D([Dashboard])
+    D[Dashboard: custom topology, metrics, faults]
     REST[REST /ndpa]
     RYU[Ryu: LLDP, classify RTT/loss, reroute]
     ST[Start / faults]
     AG[Root agent]
     OF[OpenFlow 1.3]
-    MN{{Mininet + OVS}}
+    MN{{Mininet + OVS from drawn graph}}
     UDP[UDP probes per path]
-    CL[[C++ client + JSON :9100]]
+    CL[[C++ client]]
+    REP[JSON :9100]
     ECHO[echo]
     RF[[C++ reflector]]
 
@@ -61,9 +62,10 @@ flowchart TB
     RYU --> OF --> MN
     CL --> UDP --> MN
     MN --> ECHO --> RF
+    CL --> REP --> RYU
 ```
 
-Draw any graph in the dashboard (the starting draft is a diamond). **Start** asks the root agent to bring that graph up in Mininet. Ryu discovers switch routes between **Probe from / to**, pins each one with its own UDP port (`5001`, `5002`, `5004`, …; `5003` is live traffic), and classifies reports from the C++ client. **Blackhole** drops probes on a path while the link stays up. Inventory **del** takes a live link down. JSON reports use a management veth, not the probed links.
+Draw any graph in the dashboard (the starting draft is a diamond). **Start** brings that graph up in Mininet. Ryu discovers switch routes between **Probe from / to**, pins each one with its own UDP port (`5001`, `5002`, `5004`, …; `5003` is live traffic), and classifies reports from the C++ client. **Blackhole** drops probes on a path while the link stays up. Inventory **del** takes a live link down.
 
 ---
 
