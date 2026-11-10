@@ -14,7 +14,8 @@ Usage:
                                                         # so the client can report to Ryu
 
 If topology/topo.json exists (saved from the GUI draft), that graph is used
-instead of the hardcoded diamond.
+instead of the hardcoded diamond. Pass json_ok=False to keep the diamond
+(CLI demo and eval/benchmark do this).
 
 Hosts get static ARP entries so probes never depend on ARP flooding.
 """
@@ -79,19 +80,20 @@ class JsonTopo(Topo):
                 self.addLink(nodes[a], nodes[b])
 
 
-def load_topo():
-    if os.path.isfile(TOPO_JSON):
+def load_topo(json_ok=True):
+    if json_ok and os.path.isfile(TOPO_JSON):
         with open(TOPO_JSON) as f:
             return JsonTopo(spec=json.load(f))
     return DiamondTopo()
 
 
-def build_net(datapath='kernel', controller=True, controller_ip='127.0.0.1', controller_port=6653):
+def build_net(datapath='kernel', controller=True, controller_ip='127.0.0.1',
+              controller_port=6653, json_ok=True):
     def ovs(name, **kw):
         return OVSSwitch(name, protocols='OpenFlow13', datapath=datapath,
                          failMode='secure', **kw)
 
-    net = Mininet(topo=load_topo(), switch=ovs, controller=None)
+    net = Mininet(topo=load_topo(json_ok=json_ok), switch=ovs, controller=None)
     if controller:
         net.addController('c0', controller=RemoteController,
                           ip=controller_ip, port=controller_port)

@@ -113,7 +113,7 @@ def start_run(mode, a, rundir):
                 stdout=h['ryu_log'], stderr=subprocess.STDOUT, cwd=ROOT)
             if not wait_for(lambda: rest('topology'), 20):
                 raise RuntimeError('ryu did not come up, see ryu.log')
-        net = h['net'] = diamond.build_net(a.datapath, controller=dynamic)
+        net = h['net'] = diamond.build_net(a.datapath, controller=dynamic, json_ok=False)
         net.start()
         diamond.prepare_hosts(net, a.datapath)
         h1 = net.get('h1')
@@ -188,7 +188,7 @@ def run_once(mode, scenario, rep, a, rundir):
             client += ['-c', '%s:%d' % (diamond.MGMT_ROOT_IP, REPORT_PORT)]
         spawn(h, h1, client, client_log)
         if dynamic:
-            if not wait_for(lambda: all(p['state'] == 'healthy' for p in rest('paths')['paths']), 20):
+            if not wait_for(lambda: all(p['state'] == 'healthy' for p in rest('paths')['paths']), 40):
                 raise RuntimeError('paths never became healthy before the fault')
         else:
             time.sleep(3)
