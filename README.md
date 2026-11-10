@@ -184,7 +184,7 @@ Live GUI at `/ndpa/` (C++ probes on the graph below, probe h4 → h2).
 |--------|--------|
 | Greeshma Surya | Probe engine, Ryu controller and analysis, Mininet topology, demos, dashboard, CI |
 | Divyansi KV | |
-| Bhanu Teja | |
+| Bhanu Teja | Ryu controller, network path discovery, OpenFlow routing, telemetry integration|
 
 ---
 
