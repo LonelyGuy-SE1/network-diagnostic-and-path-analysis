@@ -206,7 +206,7 @@ Live GUI at `/ndpa/` (C++ probes on the graph below, probe h4 → h2).
 | Member | Focus |
 |--------|--------|
 | Greeshma Surya | Probe engine, Ryu controller and analysis, Mininet topology, demos, dashboard, CI |
-| Divyansi KV | |
+| K V Divyansi | Benchmark harness and static baseline, fault injection, metrics and comparison, unit tests |
 | Bhanu Teja | |
 
 ---
