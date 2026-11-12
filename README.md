@@ -1,7 +1,7 @@
 # SDN-Based Network Diagnostic and Path Analysis Tool
 
 [![CI](https://github.com/LonelyGuy-SE1/network-diagnostic-and-path-analysis/actions/workflows/ci.yml/badge.svg)](https://github.com/LonelyGuy-SE1/network-diagnostic-and-path-analysis/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.9%20(Ryu)%20%7C%203.12%20(CI)-blue.svg)](https://www.python.org/)
 [![C++](https://img.shields.io/badge/C++-POSIX%20sockets-00599C.svg)](telemetry/)
 [![SDN](https://img.shields.io/badge/SDN-Ryu%20%2B%20OpenFlow%201.3-orange.svg)](controller/)
@@ -10,6 +10,14 @@
 A socket-based network diagnostic application that measures **delay (RTT)**, **packet loss**, and **path characteristics** on every candidate path between hosts, correlates those measurements with a live **SDN topology**, identifies **failed / degraded** paths, and compares alternatives so live traffic can be steered onto the best path.
 
 > Absolute RTT accuracy inside Mininet is limited by scheduler jitter. Results are interpreted relative to a healthy baseline, not as hardware-grade numbers.
+
+---
+
+## Video demo
+
+[![Watch the demo](https://img.youtube.com/vi/-sVWE2T29I4/maxresdefault.jpg)](https://www.youtube.com/watch?v=-sVWE2T29I4)
+
+[Watch on YouTube](https://www.youtube.com/watch?v=-sVWE2T29I4)
 
 ---
 
@@ -136,16 +144,31 @@ sudo ./demo/d1_demo.sh --datapath user
 
 ---
 
-## Evaluation scenarios
+## Evaluation
 
-| # | Scenario | Trigger |
-|---|----------|---------|
-| 1 | Healthy baseline | No faults |
-| 2 | Soft failure | Dashboard **Blackhole** (`tc netem` 100% loss; link stays up) |
-| 3 | Hard failure | Inventory **del** on a live link (port down) |
+Dashboard **Start** shows live RTT min/avg/max, jitter, and loss on every discovered path. Faults:
+
+| # | Scenario | Dashboard trigger |
+|---|----------|-------------------|
+| 1 | Healthy | No faults |
+| 2 | Blackhole | **Blackhole** (`tc netem` 100% loss; link stays up) |
+| 3 | Hard fail | Inventory **del** on a live link (port down) |
 | 4 | Recovery | **Clear** netem, or **+ Link** on the same pair |
 
-**Metrics:** RTT and loss per path (before/after reroute), detection time, recovery time.
+Static shortest-path vs this controller, measured on the diamond (kernel OVS, 8 s warmup, 10 s hold, 12 s settle, 100 pkt/s live UDP, 9 Nov 2026):
+
+```bash
+sudo python3 eval/benchmark.py --ryu .venv/bin/ryu-manager --reps 1
+```
+
+| Scenario | Static outage | Dynamic outage | Detect | Reroute |
+|----------|---------------|----------------|--------|---------|
+| healthy | 0.0 ms | 0.0 ms | n/a | n/a |
+| soft (60 ms + 20% loss) | 60.0 ms | 30.0 ms | 2489.4 ms | 9.5 ms |
+| blackhole (100% loss) | 10020.0 ms | 3490.0 ms | 3510.8 ms | 7.2 ms |
+| hard (link down) | 10020.0 ms | 20.0 ms | 34.9 ms | 13.1 ms |
+
+`n/a` means there was no fault (healthy) or the static baseline never classifies. Full table and CSV: [`docs/benchmark.md`](docs/benchmark.md), [`eval/results/d2-static-vs-dynamic/runs.csv`](eval/results/d2-static-vs-dynamic/runs.csv).
 
 ---
 
@@ -182,9 +205,9 @@ Live GUI at `/ndpa/` (C++ probes on the graph below, probe h4 → h2).
 
 | Member | Focus |
 |--------|--------|
-| Greeshma Surya | Probe engine, Ryu controller and analysis, Mininet topology, demos, dashboard, CI |
-| Divyansi KV | |
-| Bhanu Teja | Ryu controller, network path discovery, OpenFlow routing, telemetry integration|
+| Greeshma Surya | Full stack: C++ probe engine, Ryu controller and path analysis, network path discovery, OpenFlow routing and telemetry, Mininet topology, live dashboard, demos, benchmark harness and static baseline, fault injection, metrics and comparison, unit tests, CI, docs |
+| Divyansi KV | Benchmark harness and static baseline, fault injection, metrics and comparison, unit tests |
+| Bhanu Teja | Ryu controller, network path discovery, OpenFlow routing, telemetry integration |
 
 ---
 

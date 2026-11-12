@@ -175,7 +175,7 @@ def run(args):
         if not wait_for(lambda: rest('topology') is not None, 20):
             print('ryu did not come up, see %s/ryu.log' % args.logdir)
             return ['ryu start']
-        net = diamond.build_net(args.datapath, controller=True)
+        net = diamond.build_net(args.datapath, controller=True, json_ok=False)
         net.start()
         diamond.prepare_hosts(net, args.datapath)
         mgmt = diamond.add_mgmt_link(net)

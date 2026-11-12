@@ -11,17 +11,16 @@
 
 ```bash
 make -C telemetry all
-sudo python3 eval/benchmark.py --ryu ~/ryuenv/bin/ryu-manager --quick      # about 6 minutes, 1 run each
-sudo python3 eval/benchmark.py --ryu ~/ryuenv/bin/ryu-manager              # 3 runs each, about 25 minutes
+sudo python3 eval/benchmark.py --ryu .venv/bin/ryu-manager --reps 1         # 8 runs, about 7 minutes
+sudo python3 eval/benchmark.py --ryu .venv/bin/ryu-manager                  # 3 reps each, about 25 minutes
 sudo python3 eval/benchmark.py --modes static --scenarios hard --reps 2    # a subset
-python3 eval/summarize.py eval/results/<timestamp>/runs.csv                # table again, any time
+python3 eval/summarize.py eval/results/d2-static-vs-dynamic/runs.csv
 python3 tests/test_eval_metrics.py                                         # unit tests, no Mininet needed
 ```
 
 Add `--datapath user` if Open vSwitch has no kernel module. `RYU_MANAGER` can replace `--ryu`.
 The script runs `mn -c` before every run, which also kills any `ryu-manager` you started by hand.
-Output goes to `eval/results/<timestamp>/`: `runs.csv`, and `raw/<mode>-<scenario>-<rep>/` with the
-client, server, Ryu and live-stream logs and the controller's final `paths-final.json`.
+Published numbers below came from `--reps 1` into `eval/results/d2-static-vs-dynamic/` (`runs.csv`; `raw/` is local only). Other runs default to `eval/results/<timestamp>/`.
 
 ## Timeline of a run
 
@@ -75,12 +74,31 @@ command, so the command's own latency (tens of ms) is included. As the README sa
 numbers inside Mininet are limited by scheduler jitter, so compare static against dynamic, not
 against hardware figures.
 
-## What to expect
+## Measured results (9 Nov 2026)
 
-Static cannot recover while the fault lasts, so its outage should be close to `--hold`. Dynamic
-should lose packets only until detection and reroute: tens of milliseconds for `hard`, about two
-seconds for `blackhole` and `soft` (two bad one-second reports). These are expectations from the
-controller's design and the D1 demo, not measured results. The CSV is where the real numbers come from.
+Host: Ubuntu, kernel Open vSwitch, Mininet diamond (GUI `topo.json` not used). Command:
+
+```bash
+sudo python3 eval/benchmark.py --ryu .venv/bin/ryu-manager --reps 1 --outdir eval/results/d2-static-vs-dynamic
+```
+
+Phases: warmup 8 s, hold 10 s, settle 12 s. Live stream: 100 pkt/s, 200-byte UDP. All 8 runs completed. `n/a` is a real outcome (no fault to detect, or static mode never classifies / reroutes). CSV: [`eval/results/d2-static-vs-dynamic/runs.csv`](../eval/results/d2-static-vs-dynamic/runs.csv).
+
+| Scenario | Static outage | Dynamic outage | Static live loss | Dynamic live loss | Detect | Reroute | Recover |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| healthy | 0.0 ms | 0.0 ms | 0.0 % | 0.0 % | n/a | n/a | n/a |
+| soft | 60.0 ms | 30.0 ms | 6.9 % | 1.7 % | 2489.4 ms | 9.5 ms | 4500.6 ms |
+| blackhole | 10020.0 ms | 3490.0 ms | 33.4 % | 11.6 % | 3510.8 ms | 7.2 ms | 4514.2 ms |
+| hard | 10020.0 ms | 20.0 ms | 33.4 % | 0.1 % | 34.9 ms | 13.1 ms | 4518.2 ms |
+
+| Scenario | Static goodput in fault | Dynamic goodput in fault | Static delay in fault | Dynamic delay in fault |
+|---|---:|---:|---:|---:|
+| healthy | 160.1 kbit/s | 160.0 kbit/s | 0.2 ms | 0.1 ms |
+| soft | 126.9 kbit/s | 151.8 kbit/s | 60.2 ms | 0.1 ms |
+| blackhole | 0.2 kbit/s | 104.1 kbit/s | 0.0 ms | 0.1 ms |
+| hard | 0.0 kbit/s | 159.6 kbit/s | n/a (0 live packets) | 0.1 ms |
+
+Static stays on path A for the whole hold, so blackhole/hard outage matches the 10 s fault. Dynamic moves live traffic to s1-s3-s4: ~2.5 s after a soft fault (two bad report windows), ~3.5 s after a silent blackhole, 35 ms after a port-down. Recover ~4.5 s is the three-report hysteresis after the fault is cleared. Soft's 60.2 ms static delay is the 60 ms netem; after reroute the live delay is 0.1 ms on path B.
 
 ## Reproducibility
 
